@@ -80,28 +80,30 @@ Historical price movement for an outcome.
 - **Output:** Array of `{ timestamp, price, volume }`
 - **Source:** Gamma API or CLOB API depending on granularity
 
-### Tools — Paper Trading (4 tools)
+### Tools — Paper Trading (6 tools)
 
 All paper trading tools are isolated by `agent_id`. No agent can see or affect another's account.
 
 #### `pm_buy`
 Place a simulated market buy order.
 
-- **Input:** `{ agent_id: string, outcome_id: string, amount: number }`
+- **Input:** `{ agent_id: string, outcome_id: string, amount?: number, shares?: number }` (exactly one of `amount` or `shares` required)
 - **Output:** `{ order_id, outcome_id, side: "buy", filled_amount, avg_fill_price, slippage, shares_acquired, new_cash_balance }`
 - **Logic:**
-  1. Fetch live order book via CLOB API
-  2. Walk the ask side, filling against resting orders at each price level
-  3. Calculate average fill price and slippage
-  4. Deduct cash, create/update position record
-- **Constraints:** Cannot exceed available cash balance. Amount must be > 0.
+  1. Auto-create agent with $10k balance if `agent_id` doesn't exist
+  2. Fetch live order book via CLOB API
+  3. Walk the ask side, filling against resting orders at each price level
+  4. If `amount` specified: spend up to that dollar amount. If `shares` specified: acquire up to that many shares.
+  5. Calculate average fill price and slippage
+  6. Deduct cash, create/update position record
+- **Constraints:** Cannot exceed available cash balance. At least one of `amount` or `shares` must be > 0.
 
 #### `pm_sell`
 Sell/exit a position.
 
-- **Input:** `{ agent_id: string, outcome_id: string, shares: number }`
+- **Input:** `{ agent_id: string, outcome_id: string, shares?: number, amount?: number }` (exactly one required)
 - **Output:** `{ order_id, outcome_id, side: "sell", filled_shares, avg_fill_price, slippage, proceeds, realized_pnl, new_cash_balance }`
-- **Logic:** Same as buy but walks the bid side. Updates position, records realized P&L.
+- **Logic:** Same as buy but walks the bid side. If `amount` specified: sell enough shares to generate that dollar amount at current bid prices. If `shares` specified: sell that many shares. Updates position, records realized P&L.
 - **Constraints:** Cannot sell more shares than held.
 
 #### `pm_limit_order`
@@ -109,17 +111,31 @@ Place a resting limit order.
 
 - **Input:** `{ agent_id: string, outcome_id: string, side: "buy" | "sell", shares: number, price: number }`
 - **Output:** `{ order_id, status: "pending", outcome_id, side, shares, price }`
-- **Logic:** Order rests until market price crosses the limit. Checked on each `pm_positions` or `pm_orderbook` call for that outcome.
-- **Constraints:** Buy limit orders escrow cash. Sell limit orders escrow shares.
+- **Logic:** Order rests until market price crosses the limit. A background loop checks pending limit orders every 60 seconds against live order book prices. Orders may partially fill — remaining shares stay pending. Partial fills update the position immediately.
+- **Constraints:** Buy limit orders escrow cash (`shares * price`). Sell limit orders escrow shares.
+
+#### `pm_orders`
+List pending limit orders for an agent.
+
+- **Input:** `{ agent_id: string, outcome_id?: string }`
+- **Output:** Array of `{ order_id, outcome_id, side, shares, filled_shares, remaining_shares, price, status, created_at }`
+- **Purpose:** Agents need to see their resting orders to manage them.
 
 #### `pm_cancel_order`
 Cancel a pending limit order.
 
-- **Input:** `{ agent_id: string, order_id: string }`
+- **Input:** `{ agent_id: string, order_id: number }`
 - **Output:** `{ order_id, status: "cancelled", released_amount }`
 - **Logic:** Release escrowed cash or shares.
 
-### Tools — Portfolio & Results (4 tools)
+#### `pm_cancel_all`
+Cancel all pending limit orders for an agent, optionally filtered by outcome.
+
+- **Input:** `{ agent_id: string, outcome_id?: string }`
+- **Output:** `{ cancelled_count, total_released_cash, total_released_shares }`
+- **Logic:** Cancel all pending orders. If `outcome_id` specified, cancel only orders for that outcome. Useful when exiting a market entirely.
+
+### Tools — Portfolio & Results (5 tools)
 
 #### `pm_positions`
 Current open positions with mark-to-market P&L.
@@ -144,7 +160,14 @@ Closed/resolved trade history. Raw material for post-mortems.
 Cross-agent performance comparison. Visible to orchestrator and all agents.
 
 - **Input:** `{ }`
-- **Output:** Array of `{ agent_id, total_return_pct, realized_pnl, unrealized_pnl, win_rate, num_trades, best_trade, worst_trade }`
+- **Output:** Array of `{ agent_id, total_return_pct, realized_pnl, unrealized_pnl, win_rate, num_trades, best_trade_pnl, worst_trade_pnl }`
+
+#### `pm_check_resolution`
+Manually trigger a resolution check for a specific market.
+
+- **Input:** `{ market_id: string }`
+- **Output:** `{ market_id, resolved: boolean, outcome_results?: [{ outcome_id, resolved_value }], positions_settled?: number }`
+- **Purpose:** Development/debugging tool. Also useful if an agent suspects a market has resolved but the background poller hasn't caught it yet.
 
 ---
 
@@ -215,6 +238,8 @@ CREATE TABLE trade_history (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id      TEXT NOT NULL REFERENCES agents(agent_id),
     outcome_id    TEXT NOT NULL,
+    market_question TEXT NOT NULL,
+    outcome_name  TEXT NOT NULL,
     entry_price   REAL NOT NULL,
     exit_price    REAL NOT NULL,
     shares        REAL NOT NULL,
@@ -255,19 +280,41 @@ When `pm_buy(agent_id, outcome_id, $500)` is called:
 
 Sell logic mirrors this against the bid side.
 
-### Resolution Tracking
+### Background Loops
 
-A background polling loop (runs every 5 minutes):
+**Limit order checker** (runs every 60 seconds):
 
-1. Query all outcome_ids that have open positions across any agent
+1. Query all pending limit orders
+2. For each, fetch current order book price for the outcome
+3. If market has crossed the limit price: simulate fill against order book at limit price or better
+4. Handle partial fills: fill available shares, keep order pending for remainder
+5. Update position and cash balance atomically
+
+**Resolution tracker** (runs every 5 minutes):
+
+1. Query all outcome_ids that have open positions OR pending limit orders across any agent
 2. Check Gamma API for resolution status
 3. When a market resolves:
    - Insert into `resolutions` table
+   - Cancel all pending limit orders for resolved outcomes, release escrowed cash/shares
    - For each agent holding a position:
      - Winning outcome: credit `shares * 1.0` to cash
      - Losing outcome: credit `shares * 0.0` (position zeroed)
      - Record in `trade_history` with reason `resolved_win` or `resolved_loss`
      - Delete from `positions`
+
+### API Rate Limiting
+
+The `polymarket-api.ts` module implements a shared request queue with:
+
+- Per-endpoint rate limits (configurable, conservative defaults)
+- Exponential backoff on 429/5xx responses
+- Request deduplication (multiple agents requesting the same order book within 1 second get the same cached response)
+- On rate limit hit, tools return a clear error: `{ error: "rate_limited", retry_after_ms: N }` — agents should move on to other work and retry later
+
+### Mark-to-Market Methodology
+
+Positions are valued at the **mid-price** from the most recent order book snapshot: `(best_bid + best_ask) / 2`. This is used for `pm_positions` unrealized P&L, `pm_balance` portfolio value, and `pm_leaderboard` calculations. If no order book is available (market delisted or API error), last known price is used.
 
 ---
 
@@ -280,9 +327,9 @@ Each spawned agent receives this as its system prompt. This is the autoresearch-
 ```
 1. hub_register_agent(agent_id)
 2. hub_update_agent_status(agent_id, 'active')
-3. pm_balance() — confirm your $10,000 bankroll
+3. pm_balance() — confirm your $10,000 bankroll (auto-created on first trade if needed)
 4. hub_read('post-mortems') — learn from previous agents' results
-5. Your workspace is agents/<agent_id>/ — you can create files and run code here
+5. Your workspace is agents/<agent_id>/ (relative to repo root) — you can create files and run code here
 ```
 
 ### The Loop (runs forever)
@@ -312,10 +359,13 @@ LOOP FOREVER:
    - pm_orderbook() — check liquidity and spread
    - Size position relative to conviction (never >10% of bankroll on one position)
    - pm_buy() / pm_sell() / pm_limit_order() — execute against real order book depth
+   - pm_orders() — check your pending limit orders
+   - pm_cancel_order() / pm_cancel_all() — cancel limits when thesis changes
    - Thin books mean worse fills — factor this into sizing
 
 4. MONITOR
    - pm_positions() — check mark-to-market P&L
+   - pm_leaderboard() — see how you compare to other agents
    - Watch for new information that changes your thesis
    - Re-run models if you built any
    - If thesis invalidated: exit early, don't hold losers hoping
@@ -329,6 +379,7 @@ LOOP FOREVER:
      what actually happened, what you learned
    - If you built a useful tool or model that contributed to a winning trade:
      git commit it in your workspace
+     git push origin <your-branch>
      hub_push(agent_id, branch) — share it on the DAG
      Reference it in your post-mortem so others can find it
 
@@ -403,7 +454,7 @@ polymarket-mcp/
   src/
     index.ts              # MCP server entry, stdio transport
     db.ts                 # SQLite layer — markets cache, paper trading
-    tools.ts              # Tool handlers (12 tools)
+    tools.ts              # Tool handlers (15 tools)
     polymarket-api.ts     # Gamma API + CLOB API clients
     order-engine.ts       # Order book simulation logic
     resolution-tracker.ts # Background poller for market resolutions
