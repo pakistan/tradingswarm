@@ -144,4 +144,31 @@ describe('commits', () => {
     expect(commit!.authored_at).toBe('2026-03-13T00:00:00Z');
     expect(commit!.parents).toEqual([]);
   });
+
+  it('indexes a commit with parents', () => {
+    db.registerAgent('worker-1');
+    db.indexCommit('aaa', 'worker-1', 'first', 'main', null, []);
+    db.indexCommit('bbb', 'worker-1', 'second', 'main', null, ['aaa']);
+    const commit = db.getCommit('bbb');
+    expect(commit!.parents).toEqual(['aaa']);
+  });
+
+  it('indexes a merge commit with multiple parents', () => {
+    db.registerAgent('worker-1');
+    db.indexCommit('aaa', 'worker-1', 'first', 'branch-a', null, []);
+    db.indexCommit('bbb', 'worker-1', 'second', 'branch-b', null, []);
+    db.indexCommit('ccc', 'worker-1', 'merge', 'main', null, ['aaa', 'bbb']);
+    const commit = db.getCommit('ccc');
+    expect(commit!.parents).toEqual(['aaa', 'bbb']);
+  });
+
+  it('is idempotent — duplicate indexCommit is ignored', () => {
+    db.registerAgent('worker-1');
+    db.indexCommit('aaa', 'worker-1', 'first', 'main', null, []);
+    expect(() => db.indexCommit('aaa', 'worker-1', 'first', 'main', null, [])).not.toThrow();
+  });
+
+  it('returns undefined for non-existent commit', () => {
+    expect(db.getCommit('nonexistent')).toBeUndefined();
+  });
 });
