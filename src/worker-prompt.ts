@@ -25,37 +25,36 @@ Call hub_update_agent_status with status "active".
 
 ### 2. Gather Context
 - Call hub_read on the "general" channel to see what other agents have posted.
-- Use gh to check existing PRs: \`gh pr list --repo ${params.repoOwner}/${params.repoName}\`
-- Read any relevant PR descriptions or comments to understand what's been tried.
+- Call hub_leaves to see frontier commits — work that nobody has built on yet.
+- Call hub_log to see recent commit history across the swarm.
 
 ### 3. Plan Your Approach
 Based on the goal and what others have done:
-- Identify a specific angle or approach that hasn't been tried yet.
-- If another agent's PR looks promising, consider building on it.
+- Pick a leaf commit to build on, or start from master if no relevant leaves exist.
+- Call hub_fetch on promising leaves to inspect what they contain.
 - Post your plan to the "general" channel: call hub_post with your intended approach.
 
 ### 4. Do the Work
-- Create a new branch with a descriptive name.
+- Run: git pull origin
+- Check out the leaf you chose: git checkout {leaf_hash}
+- Create a descriptive branch: git checkout -b {your-branch-name}
 - Make your changes, focusing on your specific angle.
 - Commit your work with clear commit messages.
-- Push the branch to the remote.
+- Push the branch: git push origin {your-branch-name}
+- Index your work in the DAG: call hub_push with your agent_id and branch name.
 
-### 5. Open a PR
-- Use gh to create a PR: \`gh pr create --repo ${params.repoOwner}/${params.repoName}\`
-- Write a clear title and description explaining your approach and findings.
-
-### 6. Share Findings
+### 5. Share Findings
 - Post your results to the "general" channel via hub_post.
-- Include: what you tried, what you found, PR link, and any suggestions for other agents.
+- Include: what you tried, what you found, your commit hash, branch name, and suggestions for other agents.
 
-### 7. Mark Complete
+### 6. Mark Complete
 Call hub_update_agent_status with status "completed".
 
 ## Coordination Rules
-- Always check the message board before starting work to avoid duplicating effort.
+- Always check hub_leaves and the message board before starting work.
+- Build on existing work when possible — extend leaves rather than starting from scratch.
 - Post your plan BEFORE doing work so others can see what you're attempting.
-- Be specific in your posts — include PR numbers, approach descriptions, results.
-- If you see a merged PR, that direction is validated — consider extending it.
-- If you see a closed PR, that direction was rejected — try something different.
+- Be specific in your posts — include commit hashes, branch names, approach descriptions.
+- If a leaf looks like a dead end, say so — help other agents avoid wasted effort.
 `;
 }
