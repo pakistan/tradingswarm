@@ -30,63 +30,96 @@ Agent workflow:
 ```sql
 CREATE TABLE IF NOT EXISTS commits (
   hash TEXT PRIMARY KEY,
-  parent_hash TEXT,
   agent_id TEXT NOT NULL REFERENCES agents(id),
   message TEXT NOT NULL,
   branch TEXT NOT NULL,
+  authored_at TIMESTAMP,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_commits_parent ON commits(parent_hash);
+CREATE TABLE IF NOT EXISTS commit_parents (
+  hash TEXT NOT NULL REFERENCES commits(hash),
+  parent_hash TEXT NOT NULL,
+  ordinal INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (hash, parent_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_commit_parents_parent ON commit_parents(parent_hash);
 CREATE INDEX IF NOT EXISTS idx_commits_agent ON commits(agent_id);
 CREATE INDEX IF NOT EXISTS idx_commits_branch ON commits(branch);
 ```
 
-- `parent_hash` is NULL for root commits (or commits whose parent predates indexing)
-- A commit is a **leaf** when its `hash` does not appear in any row's `parent_hash`
-- The DAG is the set of `parent_hash → hash` edges
+- `commit_parents` junction table supports merge commits (multiple parents)
+- `ordinal` preserves parent ordering (first parent = 0)
+- `authored_at` stores the git author timestamp; `created_at` is the indexing time
+- A commit is a **leaf** when its `hash` does not appear in `commit_parents.parent_hash`
+- The DAG is the set of edges in `commit_parents`
 
 ## New MCP Tools
 
-Six new tools added to the existing 11:
+Six new tools added to the existing 11.
+
+### Shared Conventions
+
+- **Input validation**: All `hash` parameters must match `/^[0-9a-f]{7,40}$/`. All `branch` parameters must match `/^[a-zA-Z0-9._\/-]+$/`. Invalid inputs return an error, never passed to shell commands.
+- **Git execution**: All git commands use `execFile` (not `exec`) to prevent shell injection. Arguments passed as arrays.
+- **Error handling**: Git command failures (nonzero exit, missing ref) return MCP error responses with the stderr message. They do not crash the server.
+- **Concurrency**: All commit INSERTs use `INSERT OR IGNORE` to handle concurrent `hub_push` calls gracefully.
 
 ### `hub_push`
 
-Agent calls this **after** running `git push`. Server scans the repo for new commits on the branch and indexes them.
+Agent calls this after running `git push`. Server fetches the branch, scans for new commits, indexes them.
 
 ```
 Input:  { agent_id: string, branch: string }
+Precondition: agent_id must be a registered agent (FK enforced)
 Action:
-  1. Get all indexed hashes: SELECT hash FROM commits
-  2. Run: git log origin/{branch} --format="%H %P %s"
-  3. For each commit NOT already indexed:
-     INSERT INTO commits (hash, parent_hash, agent_id, message, branch)
-  4. Return count + HEAD hash
+  1. Run: git fetch origin {branch} (ensure we see latest)
+  2. Run: git log origin/{branch} --max-count=100 --format="%H%x00%P%x00%s%x00%aI"
+     (null-byte separated: hash, parents, subject, author ISO date)
+  3. Parse each line: split on \0. Parents field split on space for multi-parent commits.
+     If parents field is empty (root commit), insert no rows into commit_parents.
+  4. Get all indexed hashes: SELECT hash FROM commits
+  5. For each commit NOT already indexed:
+     INSERT OR IGNORE INTO commits (hash, agent_id, message, branch, authored_at)
+     INSERT OR IGNORE INTO commit_parents (hash, parent_hash, ordinal) for each parent
+  6. Return count + HEAD hash
 Output: "Indexed N new commit(s) on {branch}. HEAD: {hash}"
 ```
+
+**Agent attribution**: The calling agent_id is attributed to all newly indexed commits on the branch. This is intentional — the agent that pushes "claims" the branch. If a branch contains commits from other agents (e.g., fetched and built upon), those earlier commits should already be indexed from their original `hub_push` call (and are skipped via `INSERT OR IGNORE`).
+
+**Scan depth**: Limited to 100 commits per call via `--max-count`. For the initial indexing of a deep branch, agents can call `hub_push` multiple times (it's idempotent).
 
 ### `hub_leaves`
 
 Returns frontier commits — commits no agent has built on yet.
 
 ```
-Input:  { limit?: number }  (default 20)
-Action: SELECT hash, agent_id, message, branch, created_at
-        FROM commits
-        WHERE hash NOT IN (SELECT parent_hash FROM commits WHERE parent_hash IS NOT NULL)
-        ORDER BY created_at DESC
+Input Schema:
+  { limit: { type: "number", description: "Max leaves to return (default 20)" } }
+  required: []
+Action: SELECT c.hash, c.agent_id, c.message, c.branch, c.authored_at, c.created_at
+        FROM commits c
+        WHERE c.hash NOT IN (SELECT parent_hash FROM commit_parents)
+        ORDER BY c.created_at DESC
         LIMIT {limit}
 Output: JSON array of leaf commits
 ```
 
 ### `hub_fetch`
 
-Get metadata + diff summary for a specific commit.
+Get metadata + diff summary for a specific commit so an agent can decide whether to build on it.
 
 ```
-Input:  { hash: string }
-Action: Look up commit in SQLite + run: git show --stat {hash}
-Output: { hash, parent_hash, agent_id, message, branch, stat }
+Input Schema:
+  { hash: { type: "string", description: "Commit hash (7-40 hex chars)" } }
+  required: ["hash"]
+Action:
+  1. Look up commit in SQLite (including parents from commit_parents)
+  2. Run: git show --stat {hash} (via execFile, validated hash)
+  3. If git show fails (orphaned hash), return error "Commit not found in git repo"
+Output: { hash, parents: [...], agent_id, message, branch, authored_at, stat }
 ```
 
 ### `hub_log`
@@ -94,19 +127,26 @@ Output: { hash, parent_hash, agent_id, message, branch, stat }
 Recent commits across all branches.
 
 ```
-Input:  { limit?: number, agent_id?: string }  (default 50)
-Action: SELECT from commits, optionally filtered by agent_id
+Input Schema:
+  { limit: { type: "number", description: "Max commits (default 50)" },
+    agent_id: { type: "string", description: "Filter by agent" } }
+  required: []
+Action: SELECT from commits + commit_parents, optionally filtered by agent_id
         ORDER BY created_at DESC LIMIT {limit}
-Output: JSON array of commits
+Output: JSON array of commits with parents
 ```
 
 ### `hub_lineage`
 
-Walk the parent chain from a commit back to root.
+Walk the parent chain from a commit back to root. Follows **first parent only** (ordinal=0) for a linear history view.
 
 ```
-Input:  { hash: string }
-Action: Recursive parent_hash walk in SQLite
+Input Schema:
+  { hash: { type: "string", description: "Starting commit hash" },
+    depth: { type: "number", description: "Max ancestors to return (default 50)" } }
+  required: ["hash"]
+Action: Iterative first-parent walk via commit_parents WHERE ordinal = 0
+        Walk stops when no parent found, parent not indexed, or depth reached
 Output: Ordered array: [commit, parent, grandparent, ..., root]
 ```
 
@@ -115,8 +155,12 @@ Output: Ordered array: [commit, parent, grandparent, ..., root]
 Compare any two commits.
 
 ```
-Input:  { a: string, b: string }
-Action: git diff {a} {b} (truncated at 32KB)
+Input Schema:
+  { a: { type: "string", description: "Base commit hash" },
+    b: { type: "string", description: "Target commit hash" } }
+  required: ["a", "b"]
+Action: git diff {a} {b} (via execFile, validated hashes)
+        Truncate at 32KB on a line boundary, append "\n... (truncated)" marker
 Output: Diff text
 ```
 
@@ -174,28 +218,30 @@ Output: Diff text
 ## Implementation Scope
 
 ### `db.ts`
-- Add `commits` table to `migrate()`
-- Add `Commit` interface
-- Add methods: `indexCommit()`, `getLeaves()`, `getCommit()`, `getLog()`, `getLineage()`, `getAllIndexedHashes()`
+- Add `commits` + `commit_parents` tables to `migrate()`
+- Add `Commit` interface (with `parents: string[]`)
+- Add methods: `indexCommit(hash, agentId, message, branch, authoredAt, parents: string[])`, `getLeaves(limit)`, `getCommit(hash)`, `getLog(limit, agentId?)`, `getLineage(hash)`, `getAllIndexedHashes(): Set<string>`
 
 ### `tools.ts`
 - Add 6 new tool handlers: `hub_push`, `hub_leaves`, `hub_fetch`, `hub_log`, `hub_lineage`, `hub_diff`
-- Add 6 new tool definitions to `TOOL_DEFINITIONS`
-- Change `handleTool` signature to `async` (git operations need shell exec)
+- Add 6 new tool definitions to `TOOL_DEFINITIONS` (with full JSON Schema `inputSchema`)
+- Change `handleTool` signature to: `async handleTool(db: NaanDB, repoDir: string, name: string, args: Record<string, unknown>): Promise<string>`
+- Existing synchronous tool handlers still work under async signature (backward compatible)
+- Use `child_process.execFile` for all git commands (no shell spawning)
 
 ### `index.ts`
-- `await handleTool(...)` in request handler
-- Add `NAANHUB_REPO_DIR` env var (defaults to cwd or repo root)
-- Pass repo dir to `handleTool`
+- `await handleTool(db, repoDir, ...)` in request handler
+- Add `NAANHUB_REPO_DIR` env var (defaults to cwd)
+- Resolve and pass `repoDir` to `handleTool`
 
 ### `worker-prompt.ts`
 - Rewrite lifecycle: remove PR steps, add DAG steps (leaves, fetch, push)
 - Remove all `gh` CLI references
 
 ### Tests
-- `db.test.ts`: Test commits table CRUD, getLeaves logic, getLineage walk
-- `tools.test.ts`: Test all 6 new tool handlers
-- Integration: Test hub_push scanning real git commits (may need a temp git repo in test fixtures)
+- `db.test.ts`: Test commits + commit_parents CRUD, getLeaves logic (including multi-parent), getLineage walk
+- `tools.test.ts`: Test all 6 new tool handlers (mock git via temp repo)
+- Integration: Create temp git repo in test setup, make commits, test hub_push end-to-end
 
 ## Environment Variables
 
@@ -210,4 +256,5 @@ Output: Diff text
 - Bundle transport (agents use git directly)
 - Separate bare repo (agents push to origin)
 - Authentication/API keys (local Claude Code, single user)
-- Resync command (can add later if index drifts)
+- Resync command (can add later if index drifts from force pushes)
+- `is_leaf` denormalization (optimize later if leaves query gets slow)
