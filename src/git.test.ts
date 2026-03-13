@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { validateHash, validateBranch } from './git.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { validateHash, validateBranch, gitExec } from './git.js';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 describe('validateHash', () => {
   it('accepts valid short hash', () => {
@@ -36,5 +39,26 @@ describe('validateBranch', () => {
 
   it('rejects branch with semicolons', () => {
     expect(() => validateBranch('main; rm -rf /')).toThrow('Invalid branch name');
+  });
+});
+
+describe('gitExec', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'naanhub-git-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('runs git init successfully', async () => {
+    const result = await gitExec(tmpDir, ['init']);
+    expect(result).toContain('Initialized');
+  });
+
+  it('throws on invalid git command', async () => {
+    await expect(gitExec(tmpDir, ['not-a-command'])).rejects.toThrow('git not-a-command failed');
   });
 });
