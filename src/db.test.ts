@@ -171,4 +171,28 @@ describe('commits', () => {
   it('returns undefined for non-existent commit', () => {
     expect(db.getCommit('nonexistent')).toBeUndefined();
   });
+
+  it('getLeaves returns commits with no children', () => {
+    db.registerAgent('worker-1');
+    db.indexCommit('aaa', 'worker-1', 'root', 'main', null, []);
+    db.indexCommit('bbb', 'worker-1', 'child', 'main', null, ['aaa']);
+    db.indexCommit('ccc', 'worker-1', 'another leaf', 'feat', null, ['aaa']);
+    const leaves = db.getLeaves(20);
+    const hashes = leaves.map(l => l.hash);
+    expect(hashes).toContain('bbb');
+    expect(hashes).toContain('ccc');
+    expect(hashes).not.toContain('aaa');
+  });
+
+  it('getLeaves returns empty array when no commits', () => {
+    expect(db.getLeaves(20)).toEqual([]);
+  });
+
+  it('getLeaves respects limit', () => {
+    db.registerAgent('worker-1');
+    db.indexCommit('aaa', 'worker-1', 'one', 'main', null, []);
+    db.indexCommit('bbb', 'worker-1', 'two', 'feat', null, []);
+    const leaves = db.getLeaves(1);
+    expect(leaves).toHaveLength(1);
+  });
 });

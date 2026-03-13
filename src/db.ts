@@ -231,4 +231,21 @@ export class NaanDB {
 
     return { ...row, parents: parents.map(p => p.parent_hash) };
   }
+
+  getLeaves(limit: number = 20): Commit[] {
+    const rows = this.db.prepare(
+      `SELECT hash, agent_id, message, branch, authored_at, created_at
+       FROM commits
+       WHERE hash NOT IN (SELECT parent_hash FROM commit_parents)
+       ORDER BY created_at DESC
+       LIMIT ?`
+    ).all(limit) as Omit<Commit, 'parents'>[];
+
+    return rows.map(row => {
+      const parents = this.db.prepare(
+        'SELECT parent_hash FROM commit_parents WHERE hash = ? ORDER BY ordinal'
+      ).all(row.hash) as { parent_hash: string }[];
+      return { ...row, parents: parents.map(p => p.parent_hash) };
+    });
+  }
 }
