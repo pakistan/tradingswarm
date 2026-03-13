@@ -386,6 +386,8 @@ export async function handleTool(
 
       db.getOrCreateAgent(agentId);
 
+      let entryPrice: number | undefined;
+
       if (side === 'buy') {
         const escrow = shares * price;
         db.updateCash(agentId, -escrow); // escrow cash
@@ -394,14 +396,11 @@ export async function handleTool(
         if (!position || position.shares < shares) {
           throw new Error(`Insufficient shares to place sell limit. Have ${position?.shares ?? 0}, need ${shares}`);
         }
-        // Escrow shares by reducing position (avg_entry_price preserved on order via requested_amount field)
+        // Capture entry price BEFORE reducing position (upsert may delete the row if shares → 0)
+        entryPrice = position.avg_entry_price;
+        // Escrow shares by reducing position
         db.upsertPosition(agentId, outcomeId, position.shares - shares, position.avg_entry_price);
       }
-
-      // For sell limits, store original avg_entry_price so we can compute correct P&L on fill
-      const entryPrice = side === 'sell'
-        ? (db.getPosition(agentId, outcomeId)?.avg_entry_price ?? 0)
-        : undefined;
 
       const orderId = db.insertOrder({
         agent_id: agentId, outcome_id: outcomeId, side, order_type: 'limit',
@@ -579,6 +578,9 @@ export async function handleTool(
           const remaining = (order.requested_shares ?? 0) - order.filled_shares;
           if (order.side === 'buy' && order.limit_price) {
             db.updateCash(order.agent_id, remaining * order.limit_price);
+          }
+          if (order.side === 'sell') {
+            db.updateCash(order.agent_id, remaining * resolvedValue);
           }
         }
 

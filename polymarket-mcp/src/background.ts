@@ -110,10 +110,13 @@ export async function checkLimitOrders(db: PolymarketDB, api: PolymarketAPI): Pr
  * Called every 5 minutes by the background loop.
  */
 export async function checkResolutions(db: PolymarketDB, api: PolymarketAPI): Promise<number> {
-  const outcomeIds = db.getAllPositionedOutcomes();
+  // Check outcomes with positions OR pending limit orders
+  const positionedOutcomes = db.getAllPositionedOutcomes();
+  const pendingOrderOutcomes = db.getPendingOrders().map(o => o.outcome_id);
+  const outcomeIds = [...new Set([...positionedOutcomes, ...pendingOrderOutcomes])];
   if (outcomeIds.length === 0) return 0;
 
-  // Get unique market IDs for positioned outcomes
+  // Get unique market IDs for relevant outcomes
   const marketIds = new Set<string>();
   for (const oid of outcomeIds) {
     const market = db.getMarketByOutcomeId(oid);
@@ -153,7 +156,10 @@ export async function checkResolutions(db: PolymarketDB, api: PolymarketAPI): Pr
         if (order.side === 'buy' && order.limit_price) {
           db.updateCash(order.agent_id, remaining * order.limit_price);
         }
-        // Sell limit escrow: shares are gone (resolved), no need to return
+        // Sell limit escrow: shares resolve at resolvedValue — pay out if winning
+        if (order.side === 'sell') {
+          db.updateCash(order.agent_id, remaining * resolvedValue);
+        }
       }
 
       // Settle positions
