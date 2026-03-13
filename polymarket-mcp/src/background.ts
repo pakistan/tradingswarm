@@ -1,6 +1,7 @@
 import type { PolymarketDB } from './db.js';
 import type { PolymarketAPI } from './polymarket-api.js';
 import { simulateBuy, simulateSell } from './order-engine.js';
+import { settleMarket } from './settlement.js';
 
 /**
  * Check all pending limit orders against current market prices.
@@ -135,57 +136,8 @@ export async function checkResolutions(db: PolymarketDB, api: PolymarketAPI): Pr
 
     if (!detail.closed) continue;
 
-    // Market resolved — parse outcomes
-    const outcomeNames = JSON.parse(detail.outcomes ?? '[]') as string[];
-    const outcomePrices = JSON.parse(detail.outcomePrices ?? '[]') as string[];
-    const tokenIds = JSON.parse(detail.clobTokenIds ?? '[]') as string[];
-
-    for (let i = 0; i < tokenIds.length; i++) {
-      const tokenId = tokenIds[i];
-      if (db.getResolution(tokenId)) continue; // already resolved
-
-      const resolvedValue = parseFloat(outcomePrices[i]) >= 0.99 ? 1 : 0;
-      db.insertResolution(tokenId, resolvedValue);
-
-      // Cancel any pending limit orders for this outcome
-      const pendingOrders = db.getPendingOrders(undefined, tokenId);
-      for (const order of pendingOrders) {
-        db.cancelOrder(order.order_id, order.agent_id);
-        // Release escrow
-        const remaining = (order.requested_shares ?? 0) - order.filled_shares;
-        if (order.side === 'buy' && order.limit_price) {
-          db.updateCash(order.agent_id, remaining * order.limit_price);
-        }
-        // Sell limit escrow: shares resolve at resolvedValue — pay out if winning
-        if (order.side === 'sell') {
-          db.updateCash(order.agent_id, remaining * resolvedValue);
-        }
-      }
-
-      // Settle positions
-      const positions = db.getPositionsForOutcome(tokenId);
-      for (const pos of positions) {
-        db.transaction(() => {
-          const payout = pos.shares * resolvedValue;
-          db.updateCash(pos.agent_id, payout);
-
-          const outcome = db.getOutcomeById(tokenId);
-          db.recordTrade({
-            agent_id: pos.agent_id, outcome_id: tokenId,
-            market_question: detail.question ?? 'Unknown',
-            outcome_name: outcome?.name ?? outcomeNames[i] ?? 'Unknown',
-            entry_price: pos.avg_entry_price, exit_price: resolvedValue,
-            shares: pos.shares,
-            realized_pnl: (resolvedValue - pos.avg_entry_price) * pos.shares,
-            reason: resolvedValue === 1 ? 'resolved_win' : 'resolved_loss',
-            opened_at: pos.updated_at,
-          });
-
-          db.upsertPosition(pos.agent_id, tokenId, 0, 0); // deletes position
-          settled++;
-        });
-      }
-    }
+    const result = settleMarket(db, detail);
+    settled += result.positions_settled;
   }
 
   return settled;

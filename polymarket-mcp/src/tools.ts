@@ -1,6 +1,7 @@
 import type { PolymarketDB } from './db.js';
 import type { PolymarketAPI } from './polymarket-api.js';
 import { simulateBuy, simulateSell, simulateSellByAmount } from './order-engine.js';
+import { settleMarket } from './settlement.js';
 
 export const TOOL_DEFINITIONS = [
   // ---- Market Data ----
@@ -190,6 +191,24 @@ export const TOOL_DEFINITIONS = [
   },
 ];
 
+function requireString(args: Record<string, unknown>, key: string): string {
+  const v = args[key];
+  if (typeof v !== 'string' || v.length === 0) throw new Error(`${key} must be a non-empty string`);
+  return v;
+}
+
+function requirePositiveNumber(args: Record<string, unknown>, key: string): number {
+  const v = Number(args[key]);
+  if (!Number.isFinite(v) || v <= 0) throw new Error(`${key} must be a positive number`);
+  return v;
+}
+
+function requireSide(args: Record<string, unknown>): 'buy' | 'sell' {
+  const v = args.side;
+  if (v !== 'buy' && v !== 'sell') throw new Error(`side must be 'buy' or 'sell'`);
+  return v;
+}
+
 export async function handleTool(
   name: string,
   args: Record<string, unknown>,
@@ -279,10 +298,10 @@ export async function handleTool(
 
     // ---- Paper Trading ----
     case 'pm_buy': {
-      const agentId = args.agent_id as string;
-      const outcomeId = args.outcome_id as string;
-      const amount = args.amount as number | undefined;
-      const shares = args.shares as number | undefined;
+      const agentId = requireString(args, 'agent_id');
+      const outcomeId = requireString(args, 'outcome_id');
+      const amount = args.amount != null ? requirePositiveNumber(args, 'amount') : undefined;
+      const shares = args.shares != null ? requirePositiveNumber(args, 'shares') : undefined;
       if (!amount && !shares) throw new Error('Must specify amount or shares');
 
       db.getOrCreateAgent(agentId);
@@ -316,10 +335,10 @@ export async function handleTool(
     }
 
     case 'pm_sell': {
-      const agentId = args.agent_id as string;
-      const outcomeId = args.outcome_id as string;
-      const shareCount = args.shares as number | undefined;
-      const amount = args.amount as number | undefined;
+      const agentId = requireString(args, 'agent_id');
+      const outcomeId = requireString(args, 'outcome_id');
+      const shareCount = args.shares != null ? requirePositiveNumber(args, 'shares') : undefined;
+      const amount = args.amount != null ? requirePositiveNumber(args, 'amount') : undefined;
       if (!shareCount && !amount) throw new Error('Must specify shares or amount');
 
       const position = db.getPosition(agentId, outcomeId);
@@ -378,11 +397,12 @@ export async function handleTool(
     }
 
     case 'pm_limit_order': {
-      const agentId = args.agent_id as string;
-      const outcomeId = args.outcome_id as string;
-      const side = args.side as 'buy' | 'sell';
-      const shares = args.shares as number;
-      const price = args.price as number;
+      const agentId = requireString(args, 'agent_id');
+      const outcomeId = requireString(args, 'outcome_id');
+      const side = requireSide(args);
+      const shares = requirePositiveNumber(args, 'shares');
+      const price = requirePositiveNumber(args, 'price');
+      if (price > 1) throw new Error('price must be between 0 and 1 (prediction market)');
 
       db.getOrCreateAgent(agentId);
 
@@ -556,60 +576,9 @@ export async function handleTool(
       if (!market.closed) {
         return JSON.stringify({ market_id: marketId, resolved: false });
       }
-      // Market is closed/resolved — settle positions
-      const outcomeNames = JSON.parse(market.outcomes ?? '[]') as string[];
-      const outcomePrices = JSON.parse(market.outcomePrices ?? '[]') as string[];
-      const tokenIds = JSON.parse(market.clobTokenIds ?? '[]') as string[];
-      let positionsSettled = 0;
-      const outcomeResults: Array<{ outcome_id: string; resolved_value: number }> = [];
-
-      for (let i = 0; i < tokenIds.length; i++) {
-        const tokenId = tokenIds[i];
-        const resolvedValue = parseFloat(outcomePrices[i]) >= 0.99 ? 1 : 0;
-        outcomeResults.push({ outcome_id: tokenId, resolved_value: resolvedValue });
-
-        if (db.getResolution(tokenId)) continue; // already resolved
-        db.insertResolution(tokenId, resolvedValue);
-
-        // Cancel pending limit orders, release escrow
-        const pendingOrders = db.getPendingOrders(undefined, tokenId);
-        for (const order of pendingOrders) {
-          db.cancelOrder(order.order_id, order.agent_id);
-          const remaining = (order.requested_shares ?? 0) - order.filled_shares;
-          if (order.side === 'buy' && order.limit_price) {
-            db.updateCash(order.agent_id, remaining * order.limit_price);
-          }
-          if (order.side === 'sell') {
-            db.updateCash(order.agent_id, remaining * resolvedValue);
-          }
-        }
-
-        // Settle all positions
-        const positions = db.getPositionsForOutcome(tokenId);
-        for (const pos of positions) {
-          db.transaction(() => {
-            const payout = pos.shares * resolvedValue;
-            db.updateCash(pos.agent_id, payout);
-            const outcome = db.getOutcomeById(tokenId);
-            db.recordTrade({
-              agent_id: pos.agent_id, outcome_id: tokenId,
-              market_question: market.question ?? 'Unknown',
-              outcome_name: outcome?.name ?? outcomeNames[i] ?? 'Unknown',
-              entry_price: pos.avg_entry_price, exit_price: resolvedValue,
-              shares: pos.shares,
-              realized_pnl: (resolvedValue - pos.avg_entry_price) * pos.shares,
-              reason: resolvedValue === 1 ? 'resolved_win' : 'resolved_loss',
-              opened_at: pos.updated_at,
-            });
-            db.upsertPosition(pos.agent_id, tokenId, 0, 0);
-            positionsSettled++;
-          });
-        }
-      }
-
+      const result = settleMarket(db, market);
       return JSON.stringify({
-        market_id: marketId, resolved: true,
-        outcome_results: outcomeResults, positions_settled: positionsSettled,
+        market_id: marketId, resolved: true, ...result,
       }, null, 2);
     }
 
