@@ -195,4 +195,23 @@ describe('commits', () => {
     const leaves = db.getLeaves(1);
     expect(leaves).toHaveLength(1);
   });
+
+  it('getLog returns recent commits', () => {
+    db.registerAgent('worker-1');
+    db.registerAgent('worker-2');
+    db.indexCommit('aaa', 'worker-1', 'first', 'main', null, []);
+    db.indexCommit('bbb', 'worker-2', 'second', 'feat', null, ['aaa']);
+    const log = db.getLog(50);
+    expect(log).toHaveLength(2);
+  });
+
+  it('getLog filters by agent_id', () => {
+    db.registerAgent('worker-1');
+    db.registerAgent('worker-2');
+    db.indexCommit('aaa', 'worker-1', 'first', 'main', null, []);
+    db.indexCommit('bbb', 'worker-2', 'second', 'feat', null, ['aaa']);
+    const log = db.getLog(50, 'worker-1');
+    expect(log).toHaveLength(1);
+    expect(log[0].agent_id).toBe('worker-1');
+  });
 });
