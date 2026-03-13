@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "naanhub": {
+      "command": "node",
+      "args": ["/Users/adnanzaib/brainstorm/naanhub/dist/index.js"]
+    }
+  }
+}
