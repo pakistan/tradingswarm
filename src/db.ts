@@ -232,6 +232,26 @@ export class NaanDB {
     return { ...row, parents: parents.map(p => p.parent_hash) };
   }
 
+  getLineage(hash: string, depth: number = 50): Commit[] {
+    const result: Commit[] = [];
+    let current = hash;
+
+    for (let i = 0; i < depth; i++) {
+      const commit = this.getCommit(current);
+      if (!commit) break;
+      result.push(commit);
+
+      const parent = this.db.prepare(
+        'SELECT parent_hash FROM commit_parents WHERE hash = ? AND ordinal = 0'
+      ).get(current) as { parent_hash: string } | undefined;
+
+      if (!parent) break;
+      current = parent.parent_hash;
+    }
+
+    return result;
+  }
+
   getLog(limit: number = 50, agentId?: string): Commit[] {
     const query = agentId
       ? this.db.prepare(

@@ -214,4 +214,35 @@ describe('commits', () => {
     expect(log).toHaveLength(1);
     expect(log[0].agent_id).toBe('worker-1');
   });
+
+  it('getLineage walks first-parent chain', () => {
+    db.registerAgent('worker-1');
+    db.indexCommit('aaa', 'worker-1', 'root', 'main', null, []);
+    db.indexCommit('bbb', 'worker-1', 'child', 'main', null, ['aaa']);
+    db.indexCommit('ccc', 'worker-1', 'grandchild', 'main', null, ['bbb']);
+    const lineage = db.getLineage('ccc');
+    expect(lineage.map(c => c.hash)).toEqual(['ccc', 'bbb', 'aaa']);
+  });
+
+  it('getLineage follows first parent on merge commits', () => {
+    db.registerAgent('worker-1');
+    db.indexCommit('aaa', 'worker-1', 'main', 'main', null, []);
+    db.indexCommit('bbb', 'worker-1', 'branch', 'feat', null, []);
+    db.indexCommit('ccc', 'worker-1', 'merge', 'main', null, ['aaa', 'bbb']);
+    const lineage = db.getLineage('ccc');
+    expect(lineage.map(c => c.hash)).toEqual(['ccc', 'aaa']);
+  });
+
+  it('getLineage respects depth limit', () => {
+    db.registerAgent('worker-1');
+    db.indexCommit('aaa', 'worker-1', 'root', 'main', null, []);
+    db.indexCommit('bbb', 'worker-1', 'child', 'main', null, ['aaa']);
+    db.indexCommit('ccc', 'worker-1', 'grandchild', 'main', null, ['bbb']);
+    const lineage = db.getLineage('ccc', 2);
+    expect(lineage.map(c => c.hash)).toEqual(['ccc', 'bbb']);
+  });
+
+  it('getLineage returns empty for unknown hash', () => {
+    expect(db.getLineage('nonexistent')).toEqual([]);
+  });
 });
