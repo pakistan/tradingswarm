@@ -245,4 +245,15 @@ describe('commits', () => {
   it('getLineage returns empty for unknown hash', () => {
     expect(db.getLineage('nonexistent')).toEqual([]);
   });
+
+  it('getAllIndexedHashes returns set of known hashes', () => {
+    db.registerAgent('worker-1');
+    db.indexCommit('aaa', 'worker-1', 'first', 'main', null, []);
+    db.indexCommit('bbb', 'worker-1', 'second', 'main', null, ['aaa']);
+    const hashes = db.getAllIndexedHashes();
+    expect(hashes).toBeInstanceOf(Set);
+    expect(hashes.has('aaa')).toBe(true);
+    expect(hashes.has('bbb')).toBe(true);
+    expect(hashes.has('ccc')).toBe(false);
+  });
 });

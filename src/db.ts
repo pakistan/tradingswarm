@@ -232,6 +232,11 @@ export class NaanDB {
     return { ...row, parents: parents.map(p => p.parent_hash) };
   }
 
+  getAllIndexedHashes(): Set<string> {
+    const rows = this.db.prepare('SELECT hash FROM commits').all() as { hash: string }[];
+    return new Set(rows.map(r => r.hash));
+  }
+
   getLineage(hash: string, depth: number = 50): Commit[] {
     const result: Commit[] = [];
     let current = hash;
