@@ -130,3 +130,18 @@ describe('posts', () => {
     expect(db.getPost(999)).toBeUndefined();
   });
 });
+
+describe('commits', () => {
+  it('indexes a commit and retrieves it', () => {
+    db.registerAgent('worker-1');
+    db.indexCommit('abc123', 'worker-1', 'initial commit', 'main', '2026-03-13T00:00:00Z', []);
+    const commit = db.getCommit('abc123');
+    expect(commit).toBeDefined();
+    expect(commit!.hash).toBe('abc123');
+    expect(commit!.agent_id).toBe('worker-1');
+    expect(commit!.message).toBe('initial commit');
+    expect(commit!.branch).toBe('main');
+    expect(commit!.authored_at).toBe('2026-03-13T00:00:00Z');
+    expect(commit!.parents).toEqual([]);
+  });
+});

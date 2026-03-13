@@ -24,6 +24,16 @@ export interface Post {
   created_at: string;
 }
 
+export interface Commit {
+  hash: string;
+  agent_id: string;
+  message: string;
+  branch: string;
+  authored_at: string | null;
+  created_at: string;
+  parents: string[];
+}
+
 export class NaanDB {
   private db: Database.Database;
 
@@ -68,6 +78,26 @@ export class NaanDB {
 
       CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel_id);
       CREATE INDEX IF NOT EXISTS idx_posts_parent ON posts(parent_id);
+
+      CREATE TABLE IF NOT EXISTS commits (
+        hash TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id),
+        message TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        authored_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS commit_parents (
+        hash TEXT NOT NULL REFERENCES commits(hash),
+        parent_hash TEXT NOT NULL,
+        ordinal INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (hash, parent_hash)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_commit_parents_parent ON commit_parents(parent_hash);
+      CREATE INDEX IF NOT EXISTS idx_commits_agent ON commits(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_commits_branch ON commits(branch);
     `);
   }
 
@@ -172,5 +202,33 @@ export class NaanDB {
        FROM posts p JOIN channels c ON p.channel_id = c.id
        WHERE p.parent_id = ? ORDER BY p.created_at ASC`
     ).all(postId) as Post[];
+  }
+
+  // --- Commits ---
+
+  indexCommit(hash: string, agentId: string, message: string, branch: string, authoredAt: string | null, parents: string[]): void {
+    this.db.prepare(
+      'INSERT OR IGNORE INTO commits (hash, agent_id, message, branch, authored_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(hash, agentId, message, branch, authoredAt);
+
+    const insertParent = this.db.prepare(
+      'INSERT OR IGNORE INTO commit_parents (hash, parent_hash, ordinal) VALUES (?, ?, ?)'
+    );
+    for (let i = 0; i < parents.length; i++) {
+      insertParent.run(hash, parents[i], i);
+    }
+  }
+
+  getCommit(hash: string): Commit | undefined {
+    const row = this.db.prepare(
+      'SELECT hash, agent_id, message, branch, authored_at, created_at FROM commits WHERE hash = ?'
+    ).get(hash) as Omit<Commit, 'parents'> | undefined;
+    if (!row) return undefined;
+
+    const parents = this.db.prepare(
+      'SELECT parent_hash FROM commit_parents WHERE hash = ? ORDER BY ordinal'
+    ).all(hash) as { parent_hash: string }[];
+
+    return { ...row, parents: parents.map(p => p.parent_hash) };
   }
 }
