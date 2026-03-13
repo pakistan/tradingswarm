@@ -15,6 +15,7 @@ const dataDir = process.env.NAANHUB_DATA_DIR ?? path.join(os.homedir(), '.naanhu
 fs.mkdirSync(dataDir, { recursive: true });
 
 const db = new NaanDB(path.join(dataDir, 'naanhub.db'));
+const repoDir = process.env.NAANHUB_REPO_DIR ?? process.cwd();
 
 const server = new Server(
   { name: 'naanhub', version: '0.1.0' },
@@ -28,7 +29,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   try {
-    const result = handleTool(db, name, args ?? {});
+    const result = await handleTool(db, repoDir, name, args ?? {});
     return { content: [{ type: 'text', text: result }] };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
