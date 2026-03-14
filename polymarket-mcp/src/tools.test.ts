@@ -50,10 +50,37 @@ afterEach(() => {
   }
 });
 
+async function createSnapshot(agentId: string, outcomeId: string): Promise<number> {
+  const result = await handleTool('pm_snapshot', {
+    agent_id: agentId, outcome_id: outcomeId, context: 'Test trade context',
+  }, db, api);
+  return JSON.parse(result).snapshot_id;
+}
+
+describe('pm_snapshot', () => {
+  it('creates a snapshot with market conditions', async () => {
+    const result = await handleTool('pm_snapshot', {
+      agent_id: 'agent-1', outcome_id: 'token-yes', context: 'I believe X because Y',
+    }, db, api);
+    const parsed = JSON.parse(result);
+    expect(parsed.snapshot_id).toBe(1);
+    expect(parsed.market.best_ask).toBe(0.60);
+    expect(parsed.market.best_bid).toBe(0.55);
+
+    const snapshot = db.getSnapshot(1);
+    expect(snapshot).toBeDefined();
+    expect(snapshot!.agent_context).toBe('I believe X because Y');
+    const market = JSON.parse(snapshot!.market_snapshot);
+    expect(market.market.spread).toBe(0.05);
+    expect(market.portfolio.cash).toBe(10000);
+  });
+});
+
 describe('pm_buy', () => {
   it('buys shares and updates position', async () => {
+    const snapId = await createSnapshot('agent-1', 'token-yes');
     const result = await handleTool('pm_buy', {
-      agent_id: 'agent-1', outcome_id: 'token-yes', amount: 60,
+      agent_id: 'agent-1', outcome_id: 'token-yes', amount: 60, snapshot_id: snapId,
     }, db, api);
     const parsed = JSON.parse(result);
     expect(parsed.side).toBe('buy');
@@ -64,20 +91,28 @@ describe('pm_buy', () => {
 
   it('rejects buy with no amount or shares', async () => {
     await expect(
-      handleTool('pm_buy', { agent_id: 'agent-1', outcome_id: 'token-yes' }, db, api)
-    ).rejects.toThrow('Must specify');
+      handleTool('pm_buy', { agent_id: 'agent-1', outcome_id: 'token-yes', snapshot_id: 999 }, db, api)
+    ).rejects.toThrow();
+  });
+
+  it('rejects buy without snapshot', async () => {
+    await expect(
+      handleTool('pm_buy', { agent_id: 'agent-1', outcome_id: 'token-yes', amount: 60 }, db, api)
+    ).rejects.toThrow('snapshot_id is required');
   });
 });
 
 describe('pm_sell', () => {
   it('sells shares and records P&L', async () => {
     // First buy
+    const buySnap = await createSnapshot('agent-1', 'token-yes');
     await handleTool('pm_buy', {
-      agent_id: 'agent-1', outcome_id: 'token-yes', amount: 60,
+      agent_id: 'agent-1', outcome_id: 'token-yes', amount: 60, snapshot_id: buySnap,
     }, db, api);
     // Then sell
+    const sellSnap = await createSnapshot('agent-1', 'token-yes');
     const result = await handleTool('pm_sell', {
-      agent_id: 'agent-1', outcome_id: 'token-yes', shares: 50,
+      agent_id: 'agent-1', outcome_id: 'token-yes', shares: 50, snapshot_id: sellSnap,
     }, db, api);
     const parsed = JSON.parse(result);
     expect(parsed.side).toBe('sell');
@@ -86,19 +121,22 @@ describe('pm_sell', () => {
   });
 
   it('rejects selling more than held', async () => {
+    const buySnap = await createSnapshot('agent-1', 'token-yes');
     await handleTool('pm_buy', {
-      agent_id: 'agent-1', outcome_id: 'token-yes', amount: 60,
+      agent_id: 'agent-1', outcome_id: 'token-yes', amount: 60, snapshot_id: buySnap,
     }, db, api);
+    const sellSnap = await createSnapshot('agent-1', 'token-yes');
     await expect(
-      handleTool('pm_sell', { agent_id: 'agent-1', outcome_id: 'token-yes', shares: 200 }, db, api)
+      handleTool('pm_sell', { agent_id: 'agent-1', outcome_id: 'token-yes', shares: 200, snapshot_id: sellSnap }, db, api)
     ).rejects.toThrow('Cannot sell');
   });
 });
 
 describe('pm_limit_order', () => {
   it('places a buy limit order and escrows cash', async () => {
+    const snapId = await createSnapshot('agent-1', 'token-yes');
     const result = await handleTool('pm_limit_order', {
-      agent_id: 'agent-1', outcome_id: 'token-yes', side: 'buy', shares: 100, price: 0.50,
+      agent_id: 'agent-1', outcome_id: 'token-yes', side: 'buy', shares: 100, price: 0.50, snapshot_id: snapId,
     }, db, api);
     const parsed = JSON.parse(result);
     expect(parsed.status).toBe('pending');
@@ -110,8 +148,9 @@ describe('pm_limit_order', () => {
 
 describe('pm_cancel_order', () => {
   it('cancels and releases escrowed cash', async () => {
+    const snapId = await createSnapshot('agent-1', 'token-yes');
     const orderResult = await handleTool('pm_limit_order', {
-      agent_id: 'agent-1', outcome_id: 'token-yes', side: 'buy', shares: 100, price: 0.50,
+      agent_id: 'agent-1', outcome_id: 'token-yes', side: 'buy', shares: 100, price: 0.50, snapshot_id: snapId,
     }, db, api);
     const { order_id } = JSON.parse(orderResult);
 

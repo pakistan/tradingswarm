@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import type { AgentRow, MarketRow, OutcomeRow, OrderRow, PositionRow, TradeHistoryRow, ResolutionRow } from './types.js';
+import type { AgentRow, MarketRow, OutcomeRow, OrderRow, PositionRow, TradeHistoryRow, ResolutionRow, TradeSnapshotRow } from './types.js';
 
 export class PolymarketDB {
   private db: Database.Database;
@@ -60,6 +60,7 @@ export class PolymarketDB {
         avg_fill_price REAL,
         slippage      REAL,
         escrowed_entry_price REAL,
+        snapshot_id   INTEGER REFERENCES trade_snapshots(snapshot_id),
         status        TEXT NOT NULL CHECK (status IN ('filled', 'partial', 'pending', 'cancelled')),
         created_at    TEXT NOT NULL DEFAULT (datetime('now')),
         filled_at     TEXT
@@ -95,6 +96,15 @@ export class PolymarketDB {
         outcome_id    TEXT PRIMARY KEY,
         resolved_value REAL NOT NULL,
         resolved_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS trade_snapshots (
+        snapshot_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id      TEXT NOT NULL REFERENCES agents(agent_id),
+        outcome_id    TEXT NOT NULL,
+        agent_context TEXT NOT NULL,
+        market_snapshot TEXT NOT NULL,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
       );
 
       CREATE INDEX IF NOT EXISTS idx_orders_agent ON orders(agent_id);
@@ -205,18 +215,19 @@ export class PolymarketDB {
     avg_fill_price?: number;
     slippage?: number;
     escrowed_entry_price?: number;
+    snapshot_id?: number;
     status: 'filled' | 'partial' | 'pending' | 'cancelled';
   }): number {
     const result = this.db.prepare(`
       INSERT INTO orders (agent_id, outcome_id, side, order_type, requested_amount, requested_shares,
-        limit_price, filled_amount, filled_shares, avg_fill_price, slippage, escrowed_entry_price, status, filled_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'filled' THEN datetime('now') ELSE NULL END)
+        limit_price, filled_amount, filled_shares, avg_fill_price, slippage, escrowed_entry_price, snapshot_id, status, filled_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'filled' THEN datetime('now') ELSE NULL END)
     `).run(
       order.agent_id, order.outcome_id, order.side, order.order_type,
       order.requested_amount ?? null, order.requested_shares ?? null,
       order.limit_price ?? null, order.filled_amount ?? 0, order.filled_shares ?? 0,
       order.avg_fill_price ?? null, order.slippage ?? null,
-      order.escrowed_entry_price ?? null, order.status, order.status
+      order.escrowed_entry_price ?? null, order.snapshot_id ?? null, order.status, order.status
     );
     return Number(result.lastInsertRowid);
   }
@@ -388,6 +399,28 @@ export class PolymarketDB {
       agent_id: string; current_cash: number; initial_balance: number;
       realized_pnl: number; unrealized_pnl: number; num_trades: number; wins: number;
     }>;
+  }
+
+  // ---- Trade Snapshots ----
+
+  insertSnapshot(snapshot: { agent_id: string; outcome_id: string; agent_context: string; market_snapshot: string }): number {
+    const result = this.db.prepare(`
+      INSERT INTO trade_snapshots (agent_id, outcome_id, agent_context, market_snapshot)
+      VALUES (?, ?, ?, ?)
+    `).run(snapshot.agent_id, snapshot.outcome_id, snapshot.agent_context, snapshot.market_snapshot);
+    return Number(result.lastInsertRowid);
+  }
+
+  getSnapshot(snapshotId: number): TradeSnapshotRow | undefined {
+    return this.db.prepare(
+      `SELECT * FROM trade_snapshots WHERE snapshot_id = ?`
+    ).get(snapshotId) as TradeSnapshotRow | undefined;
+  }
+
+  getSnapshotsForAgent(agentId: string): TradeSnapshotRow[] {
+    return this.db.prepare(
+      `SELECT * FROM trade_snapshots WHERE agent_id = ? ORDER BY created_at DESC`
+    ).all(agentId) as TradeSnapshotRow[];
   }
 
   // ---- Transactions ----

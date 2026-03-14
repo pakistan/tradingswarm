@@ -55,10 +55,24 @@ export const TOOL_DEFINITIONS = [
       required: ['outcome_id'],
     },
   },
+  // ---- Trade Snapshots ----
+  {
+    name: 'pm_snapshot',
+    description: 'Record your trading context BEFORE placing a trade. Captures your reasoning + auto-captures market conditions. Returns a snapshot_id required by pm_buy, pm_sell, and pm_limit_order. Include everything: research findings, web search results, thesis, reasoning, why you believe the market is mispriced.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        agent_id: { type: 'string', description: 'Your agent ID' },
+        outcome_id: { type: 'string', description: 'Outcome token ID you plan to trade' },
+        context: { type: 'string', description: 'Your full trading context: research, thesis, reasoning, data sources, why you believe this is mispriced. Be thorough — this is your record for post-mortems.' },
+      },
+      required: ['agent_id', 'outcome_id', 'context'],
+    },
+  },
   // ---- Paper Trading ----
   {
     name: 'pm_buy',
-    description: 'Place a simulated buy order. Fills against real order book depth, modeling slippage. Specify amount (dollars) OR shares (count).',
+    description: 'Place a simulated buy order. Fills against real order book depth, modeling slippage. Specify amount (dollars) OR shares (count). Requires a snapshot_id from pm_snapshot.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -66,13 +80,14 @@ export const TOOL_DEFINITIONS = [
         outcome_id: { type: 'string', description: 'Outcome token ID to buy' },
         amount: { type: 'number', description: 'Dollar amount to spend' },
         shares: { type: 'number', description: 'Number of shares to buy' },
+        snapshot_id: { type: 'number', description: 'Snapshot ID from pm_snapshot (required)' },
       },
-      required: ['agent_id', 'outcome_id'],
+      required: ['agent_id', 'outcome_id', 'snapshot_id'],
     },
   },
   {
     name: 'pm_sell',
-    description: 'Sell/exit a position. Fills against real order book depth. Specify shares (count) OR amount (dollar proceeds target).',
+    description: 'Sell/exit a position. Fills against real order book depth. Specify shares (count) OR amount (dollar proceeds target). Requires a snapshot_id from pm_snapshot.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -80,13 +95,14 @@ export const TOOL_DEFINITIONS = [
         outcome_id: { type: 'string', description: 'Outcome token ID to sell' },
         shares: { type: 'number', description: 'Number of shares to sell' },
         amount: { type: 'number', description: 'Dollar amount of proceeds to target' },
+        snapshot_id: { type: 'number', description: 'Snapshot ID from pm_snapshot (required)' },
       },
-      required: ['agent_id', 'outcome_id'],
+      required: ['agent_id', 'outcome_id', 'snapshot_id'],
     },
   },
   {
     name: 'pm_limit_order',
-    description: 'Place a resting limit order at a specific price. Fills when market crosses that level.',
+    description: 'Place a resting limit order at a specific price. Fills when market crosses that level. Requires a snapshot_id from pm_snapshot.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -95,8 +111,9 @@ export const TOOL_DEFINITIONS = [
         side: { type: 'string', enum: ['buy', 'sell'], description: 'Buy or sell' },
         shares: { type: 'number', description: 'Number of shares' },
         price: { type: 'number', description: 'Limit price' },
+        snapshot_id: { type: 'number', description: 'Snapshot ID from pm_snapshot (required)' },
       },
-      required: ['agent_id', 'outcome_id', 'side', 'shares', 'price'],
+      required: ['agent_id', 'outcome_id', 'side', 'shares', 'price', 'snapshot_id'],
     },
   },
   {
@@ -296,6 +313,54 @@ export async function handleTool(
       return JSON.stringify(history, null, 2);
     }
 
+    // ---- Trade Snapshots ----
+    case 'pm_snapshot': {
+      const agentId = requireString(args, 'agent_id');
+      const outcomeId = requireString(args, 'outcome_id');
+      const context = requireString(args, 'context');
+
+      // Auto-capture market conditions
+      let marketSnapshot: Record<string, unknown> = {};
+      try {
+        const book = await api.getOrderBook(outcomeId);
+        const askDepth = book.asks.reduce((sum, l) => sum + l.price * l.size, 0);
+        const bidDepth = book.bids.reduce((sum, l) => sum + l.price * l.size, 0);
+        marketSnapshot = {
+          best_bid: book.bids[0]?.price ?? null,
+          best_ask: book.asks[0]?.price ?? null,
+          spread: book.spread,
+          mid_price: book.mid_price,
+          ask_levels: book.asks.length,
+          bid_levels: book.bids.length,
+          total_ask_depth_usd: Math.round(askDepth * 100) / 100,
+          total_bid_depth_usd: Math.round(bidDepth * 100) / 100,
+          top_5_asks: book.asks.slice(0, 5),
+          top_5_bids: book.bids.slice(0, 5),
+          timestamp: book.timestamp,
+        };
+      } catch {
+        marketSnapshot = { error: 'Could not fetch order book' };
+      }
+
+      // Capture agent's current portfolio state
+      const agent = db.getOrCreateAgent(agentId);
+      const positions = db.getPositions(agentId);
+      const portfolioSnapshot = {
+        cash: agent.current_cash,
+        num_positions: positions.length,
+        total_position_value: positions.reduce((sum, p) => sum + p.shares * (p.current_price ?? p.avg_entry_price), 0),
+      };
+
+      const snapshotId = db.insertSnapshot({
+        agent_id: agentId,
+        outcome_id: outcomeId,
+        agent_context: context,
+        market_snapshot: JSON.stringify({ market: marketSnapshot, portfolio: portfolioSnapshot }),
+      });
+
+      return JSON.stringify({ snapshot_id: snapshotId, outcome_id: outcomeId, market: marketSnapshot }, null, 2);
+    }
+
     // ---- Paper Trading ----
     case 'pm_buy': {
       const agentId = requireString(args, 'agent_id');
@@ -303,6 +368,9 @@ export async function handleTool(
       const amount = args.amount != null ? requirePositiveNumber(args, 'amount') : undefined;
       const shares = args.shares != null ? requirePositiveNumber(args, 'shares') : undefined;
       if (!amount && !shares) throw new Error('Must specify amount or shares');
+      const snapshotId = args.snapshot_id as number;
+      if (!snapshotId) throw new Error('snapshot_id is required. Call pm_snapshot first to record your trading context.');
+      if (!db.getSnapshot(snapshotId)) throw new Error(`Snapshot ${snapshotId} not found`);
 
       db.getOrCreateAgent(agentId);
       const book = await api.getOrderBook(outcomeId);
@@ -321,7 +389,8 @@ export async function handleTool(
           agent_id: agentId, outcome_id: outcomeId, side: 'buy', order_type: 'market',
           requested_amount: amount, requested_shares: shares,
           filled_amount: fill.filled_amount, filled_shares: fill.filled_shares,
-          avg_fill_price: fill.avg_fill_price, slippage: fill.slippage, status: 'filled',
+          avg_fill_price: fill.avg_fill_price, slippage: fill.slippage,
+          snapshot_id: snapshotId, status: 'filled',
         });
 
         const agent = db.getOrCreateAgent(agentId);
@@ -340,6 +409,9 @@ export async function handleTool(
       const shareCount = args.shares != null ? requirePositiveNumber(args, 'shares') : undefined;
       const amount = args.amount != null ? requirePositiveNumber(args, 'amount') : undefined;
       if (!shareCount && !amount) throw new Error('Must specify shares or amount');
+      const snapshotId = args.snapshot_id as number;
+      if (!snapshotId) throw new Error('snapshot_id is required. Call pm_snapshot first to record your trading context.');
+      if (!db.getSnapshot(snapshotId)) throw new Error(`Snapshot ${snapshotId} not found`);
 
       const position = db.getPosition(agentId, outcomeId);
       if (!position || position.shares <= 0) throw new Error('No position to sell');
@@ -383,7 +455,8 @@ export async function handleTool(
           agent_id: agentId, outcome_id: outcomeId, side: 'sell', order_type: 'market',
           requested_shares: shareCount, requested_amount: amount,
           filled_amount: fill.filled_amount, filled_shares: fill.filled_shares,
-          avg_fill_price: fill.avg_fill_price, slippage: fill.slippage, status: 'filled',
+          avg_fill_price: fill.avg_fill_price, slippage: fill.slippage,
+          snapshot_id: snapshotId, status: 'filled',
         });
 
         const agent = db.getOrCreateAgent(agentId);
@@ -403,6 +476,9 @@ export async function handleTool(
       const shares = requirePositiveNumber(args, 'shares');
       const price = requirePositiveNumber(args, 'price');
       if (price > 1) throw new Error('price must be between 0 and 1 (prediction market)');
+      const snapshotId = args.snapshot_id as number;
+      if (!snapshotId) throw new Error('snapshot_id is required. Call pm_snapshot first to record your trading context.');
+      if (!db.getSnapshot(snapshotId)) throw new Error(`Snapshot ${snapshotId} not found`);
 
       db.getOrCreateAgent(agentId);
 
@@ -426,7 +502,7 @@ export async function handleTool(
         agent_id: agentId, outcome_id: outcomeId, side, order_type: 'limit',
         requested_shares: shares, limit_price: price,
         escrowed_entry_price: entryPrice,
-        status: 'pending',
+        snapshot_id: snapshotId, status: 'pending',
       });
 
       return JSON.stringify({ order_id: orderId, status: 'pending', outcome_id: outcomeId, side, shares, price }, null, 2);

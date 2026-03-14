@@ -78,6 +78,15 @@ export interface ResolutionRow {
   resolved_at: string;
 }
 
+export interface TradeSnapshotRow {
+  snapshot_id: number;
+  agent_id: string;
+  outcome_id: string;
+  agent_context: string;
+  market_snapshot: string;
+  created_at: string;
+}
+
 // ---- API response types ----
 
 export interface OrderBookLevel {
