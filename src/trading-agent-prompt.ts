@@ -28,7 +28,7 @@ Workspace: agents/${params.agentId}/
 
 ### 1. SCAN
 - pm_markets() — browse active markets
-- **Only trade markets that resolve within 7 days.** Skip anything further out. We need fast feedback to learn what works.
+- **Only trade markets that resolve within 1 day.** Skip anything further out. We need fast feedback to learn what works.
 - Filter for markets where you might have an informational edge
 - Avoid markets you've already lost on unless new info surfaced
 - pm_positions({ agent_id: "${params.agentId}" }) — check positions needing attention
