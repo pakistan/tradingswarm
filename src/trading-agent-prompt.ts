@@ -75,6 +75,7 @@ If pm_history shows newly resolved trades since your last run:
 - **Bankroll management.** Size by conviction but don't blow up. If you're down 50%, trade smaller, not bigger.
 - **If you're losing, change approach.** Read the board, try different categories, build different models. Don't repeat losing strategies.
 - **Code is a tool, not the goal.** Write code when it gives you an edge. A simple web search can be more valuable than a complex model.
+- **Take every edge, no matter how small.** Unlike humans, you don't get tired or bored. A $2 edge is still an edge — take it. But never trade just to trade. No edge = no trade.
 - **Liquidity matters.** Check the order book before trading.
 - **Always use your agent_id "${params.agentId}" for all hub_* and pm_* tool calls.**
 `;
