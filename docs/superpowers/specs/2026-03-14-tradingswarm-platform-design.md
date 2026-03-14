@@ -635,12 +635,90 @@ From the existing polymarket-mcp codebase (45 passing tests):
 
 ---
 
+## Agent Crash Recovery
+
+When an agent child process exits unexpectedly:
+
+1. **Detection:** `child.on('exit', ...)` handler fires in the Agent Manager.
+2. **Restart policy:** Immediate restart with exponential backoff (1s, 2s, 4s, 8s). Max 5 retries within 30 minutes before marking `status = 'failed'`.
+3. **Idempotency:** Every step in the agent loop must be safe to re-execute. Trades are atomic (DB transaction), memory writes are idempotent (upsert by topic), and channel posts are append-only.
+4. **Server restart:** Child processes spawned via `child_process.spawn` die when the parent dies. On server startup, the Agent Manager reads all agents with `status = 'running'` and re-spawns them. This means a brief gap during restart but no manual intervention needed.
+5. **Graceful shutdown:** On SIGTERM/SIGINT, the server sends SIGTERM to all child processes and waits up to 10s for clean exit before force-killing.
+
+---
+
+## Schema Migration Notes
+
+This platform creates a **new unified database** (`tradingswarm.db`). The existing `naanhub.db` and `polymarket.db` databases are not migrated — they served as prototypes. The new schema incorporates learnings from both but is a clean start.
+
+### Design Notes
+
+- **`outcome_id` columns are intentionally not FK-constrained** to the `outcomes` table. Outcomes are lazily cached from external APIs and may not exist locally at trade time. This applies to `orders.outcome_id`, `positions.outcome_id`, `trade_history.outcome_id`, and `trade_snapshots.outcome_id`.
+- **`agents.updated_at`** column should be added: `updated_at TEXT NOT NULL DEFAULT (datetime('now'))` — needed for Dashboard temporal displays and leaderboard sorting.
+- **NaanHub DAG system** (commits, commit_parents, git operations) is intentionally dropped. Trading agents don't use the commit DAG — they coordinate via channels and memory. The DAG can be re-added in Phase 2 if agents need to share code/models.
+- **`config_versions.mechanics_file`** stores the markdown content inline (TEXT), not a file path. If configs need multiple attached files in the future, add a `config_version_files` join table.
+- **`model_providers.api_key`** stores keys in plaintext — acceptable for Phase 1 local-only. Phase 2 multi-tenant must move to environment variables or a secrets manager.
+
+### Additional Columns/Tables Identified During Review
+
+**Add `cycle_id` to `tool_log` and `agent_events`:**
+```sql
+ALTER TABLE tool_log ADD COLUMN cycle_id TEXT;
+ALTER TABLE agent_events ADD COLUMN cycle_id TEXT;
+CREATE INDEX idx_tool_log_cycle ON tool_log(cycle_id);
+```
+A UUID generated at `loop_start` and carried through the entire cycle. Enables the Tool Activity Log chain visualization (web_search → pm_orderbook → pm_snapshot → pm_buy all share the same `cycle_id`).
+
+**Add `daily_snapshots` table:**
+```sql
+CREATE TABLE daily_snapshots (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id      TEXT NOT NULL REFERENCES agents(agent_id),
+  date          TEXT NOT NULL,
+  cash          REAL NOT NULL,
+  positions_value REAL NOT NULL,
+  realized_pnl_cumulative REAL NOT NULL,
+  unrealized_pnl REAL NOT NULL,
+  total_portfolio_value REAL NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(agent_id, date)
+);
+```
+Recorded at end of each day. Powers the Dashboard sparkline and historical P&L charts.
+
+**Add composite index for agent_events filtering:**
+```sql
+CREATE INDEX idx_agent_events_type ON agent_events(agent_id, event_type, created_at);
+```
+
+**Add `schedule_interval` CHECK constraint:**
+```sql
+schedule_interval TEXT DEFAULT '1h' CHECK (schedule_interval IN ('5m', '15m', '30m', '1h', '2h', '4h', '8h', '12h', '24h'))
+```
+
+**Updated table count: 22 tables** (configs, config_versions, rules, config_version_rules, tools, tool_capabilities, config_version_capabilities, model_providers, agents, markets, outcomes, orders, positions, trade_history, resolutions, trade_snapshots, channels, posts, tool_log, agent_memory, agent_events, daily_snapshots).
+
+---
+
+## Platform Plugin Interface (Phase 1 Scope)
+
+The plugin interface defined above is scoped for **Phase 1 prediction markets only**. It assumes binary outcomes, order book simulation, and market resolution. Phase 2 platforms (Coinbase, Binance) have fundamentally different structures (spot/futures, continuous trading, no resolution) and will require a redesigned plugin interface. This is intentional — we avoid over-abstracting before we understand the requirements of real exchange integrations.
+
+---
+
+## SSE Reconnection
+
+The SSE endpoint supports `Last-Event-ID` for reconnection. Each event has a sequential ID from `agent_events.id`. On reconnect, the server replays events after the last received ID, bounded to 1000 events max. This prevents gaps in the Live Feed and Live Agent View after network blips.
+
+---
+
 ## Phase 2 (Future)
 
-- Additional trading platform plugins (Coinbase, Kalshi, Binance, Hyperliquid)
+- Additional trading platform plugins (Coinbase, Kalshi, Binance, Hyperliquid) — requires redesigned plugin interface
 - Multi-tenant support (user accounts, isolated agent swarms)
 - Advanced agent memory (embedding-based retrieval for long histories)
 - Skill sharing between agents (commit tools/models to shared DAG)
 - Agent intervention (pause mid-thought, send messages, override trades)
 - P&L analytics (charts, drawdown analysis, Sharpe ratio, strategy attribution)
 - Webhook notifications (Slack, email on wins/losses/failures)
+- Secrets management for API keys (replace plaintext storage)
