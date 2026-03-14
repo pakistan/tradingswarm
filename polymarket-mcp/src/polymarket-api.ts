@@ -74,8 +74,12 @@ export class PolymarketAPI {
       last_trade_price: string;
     };
 
-    const bids: OrderBookLevel[] = raw.bids.map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }));
-    const asks: OrderBookLevel[] = raw.asks.map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }));
+    const bids: OrderBookLevel[] = raw.bids
+      .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
+      .sort((a, b) => b.price - a.price); // highest bid first
+    const asks: OrderBookLevel[] = raw.asks
+      .map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
+      .sort((a, b) => a.price - b.price); // lowest ask first
 
     const bestBid = bids.length > 0 ? bids[0].price : 0;
     const bestAsk = asks.length > 0 ? asks[0].price : 1;
