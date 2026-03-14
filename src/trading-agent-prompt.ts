@@ -17,11 +17,12 @@ Workspace: agents/${params.agentId}/
 
 ## Setup (run once)
 
-1. hub_register_agent("${params.agentId}")
-2. hub_update_agent_status("${params.agentId}", "active")
-3. pm_balance({ agent_id: "${params.agentId}" }) — confirm your $10,000 bankroll
-4. hub_read({ channel: "post-mortems" }) — learn from previous agents' results
-5. Create your workspace directory at agents/${params.agentId}/ if it doesn't exist
+1. Read agents/mechanics.md — understand how order books, slippage, and fills work BEFORE trading
+2. hub_register_agent("${params.agentId}")
+3. hub_update_agent_status("${params.agentId}", "active")
+4. pm_balance({ agent_id: "${params.agentId}" }) — confirm your $10,000 bankroll
+5. hub_read({ channel: "post-mortems" }) — learn from previous agents' results
+6. Create your workspace directory at agents/${params.agentId}/ if it doesn't exist
 
 ## The Loop (run forever)
 
