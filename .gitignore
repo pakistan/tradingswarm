@@ -1,14 +1,22 @@
 node_modules/
 dist/
-*.db
-data/
-node_modules/
 .next/
 out/
+
+# Data
 data/
-.env
-.env.local
 *.db
 *.db-shm
 *.db-wal
-*.py
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+
+# Local tooling
+.claude/
+.superpowers/
+test-results/

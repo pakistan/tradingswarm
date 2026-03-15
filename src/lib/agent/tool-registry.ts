@@ -375,7 +375,9 @@ function buildPmHandlers(
   return {
     pm_markets: async (args) => {
       const limit = Number(args.limit) || 20;
-      const markets = await api.listMarkets({ limit, closed: false });
+      // Randomize offset so different agents explore different markets
+      const randomOffset = Math.floor(Math.random() * 80);
+      const markets = await api.listMarkets({ limit, offset: randomOffset, closed: false });
       // Cache to DB
       for (const m of markets) {
         try {
