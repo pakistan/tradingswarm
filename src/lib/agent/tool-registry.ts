@@ -5,11 +5,15 @@ import { getVersionCapabilities } from '@/lib/db/configs';
 import * as trades from '@/lib/db/trades';
 import * as channels from '@/lib/db/channels';
 import * as snapshots from '@/lib/db/snapshots';
-import * as agents from '@/lib/db/agents';
 import { getMemory, upsertMemory } from '@/lib/db/observability';
 import { PolymarketAPI } from '@/lib/platforms/polymarket/api';
-import { simulateBuy, simulateSell } from '@/lib/trading/order-engine';
+import { TradingService } from '@/lib/trading/service';
+import { PolymarketPlatform } from '@/lib/platforms/polymarket/adapter';
+import { BinancePlatform } from '@/lib/platforms/binance/adapter';
 import type { GammaMarket } from '@/lib/platforms/polymarket/types';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execSync } from 'node:child_process';
 
 // ---- Types ----
 
@@ -50,12 +54,12 @@ export function createToolRegistry(): ToolRegistry {
 const PM_TOOL_DEFS: Record<string, ToolDef> = {
   pm_markets: {
     name: 'pm_markets',
-    description: 'List prediction markets. Returns market question, outcome prices, volume, end date.',
+    description: 'List prediction markets sorted by volume. Use offset to paginate and explore beyond the top markets.',
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Search query' },
         limit: { type: 'number', description: 'Max results (default 20)' },
+        offset: { type: 'number', description: 'Skip this many results (default 0). Use to paginate: offset=0 for top markets, offset=20 for next page, etc.' },
       },
     },
   },
@@ -252,6 +256,64 @@ const WORKSPACE_TOOL_DEFS: Record<string, ToolDef> = {
   },
 };
 
+const MARKET_DATA_TOOL_DEFS: Record<string, ToolDef> = {
+  crypto_price: {
+    name: 'crypto_price',
+    description: 'Get current crypto prices from Binance. No API key needed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Trading pair, e.g. BTCUSDT, ETHUSDT, SOLUSDT' },
+      },
+      required: ['symbol'],
+    },
+  },
+  crypto_history: {
+    name: 'crypto_history',
+    description: 'Get crypto price history (candlesticks) from Binance.',
+    parameters: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Trading pair, e.g. BTCUSDT' },
+        interval: { type: 'string', description: 'Candle interval: 1h, 4h, 1d, 1w (default 1d)' },
+        limit: { type: 'number', description: 'Number of candles (default 30, max 100)' },
+      },
+      required: ['symbol'],
+    },
+  },
+  stock_price: {
+    name: 'stock_price',
+    description: 'Get current stock price from Alpha Vantage. Use for equities, ETFs, indices.',
+    parameters: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Ticker symbol, e.g. SPY, AAPL, XLE, GLD, TLT' },
+      },
+      required: ['symbol'],
+    },
+  },
+  stock_top_movers: {
+    name: 'stock_top_movers',
+    description: 'Get top gainers, losers, and most active stocks today.',
+    parameters: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  econ_data: {
+    name: 'econ_data',
+    description: 'Get economic data from FRED (Federal Reserve). Series include: DFF (fed funds rate), DGS10 (10yr treasury), DGS2 (2yr treasury), UNRATE (unemployment), CPIAUCSL (CPI), GDP, T10Y2Y (yield curve).',
+    parameters: {
+      type: 'object',
+      properties: {
+        series_id: { type: 'string', description: 'FRED series ID, e.g. DFF, DGS10, UNRATE, CPIAUCSL, GDP, T10Y2Y' },
+        limit: { type: 'number', description: 'Number of observations (default 10, most recent first)' },
+      },
+      required: ['series_id'],
+    },
+  },
+};
+
 const CHANNEL_TOOL_DEFS: Record<string, ToolDef> = {
   hub_list_channels: {
     name: 'hub_list_channels',
@@ -369,15 +431,15 @@ function wrapWithLogging(
 function buildPmHandlers(
   db: Database.Database,
   agentId: string,
+  tradingService: TradingService,
 ): Record<string, ToolHandler> {
   const api = new PolymarketAPI();
 
   return {
     pm_markets: async (args) => {
-      const limit = Number(args.limit) || 20;
-      // Randomize offset so different agents explore different markets
-      const randomOffset = Math.floor(Math.random() * 80);
-      const markets = await api.listMarkets({ limit, offset: randomOffset, closed: false });
+      const limit = Math.min(Number(args.limit) || 10, 15);
+      const offset = Number(args.offset) || 0;
+      const markets = await api.listMarkets({ limit, offset, closed: false });
       // Cache to DB
       for (const m of markets) {
         try {
@@ -415,201 +477,31 @@ function buildPmHandlers(
       });
     },
     pm_positions: async () => {
-      const positions = trades.getPositions(db, agentId);
-      // Update current prices from API for unrealized P&L
-      for (const pos of positions) {
-        try {
-          const mid = await api.getMidpointPrice(pos.outcome_id);
-          trades.updatePositionPrice(db, agentId, pos.outcome_id, mid);
-        } catch { /* skip price update failures */ }
-      }
-      const updated = trades.getPositions(db, agentId);
-      return JSON.stringify(updated);
+      const portfolio = await tradingService.getPortfolio(agentId);
+      return JSON.stringify(portfolio.positions);
     },
     pm_balance: async () => {
-      const agent = agents.getAgent(db, agentId);
-      if (!agent) return JSON.stringify({ error: 'Agent not found' });
-      const positions = trades.getPositions(db, agentId);
-      const totalRealizedPnl = trades.getTotalRealizedPnl(db, agentId);
-      const unrealizedPnl = positions.reduce((sum, p) => sum + (p.unrealized_pnl ?? 0), 0);
+      const portfolio = await tradingService.getPortfolio(agentId);
       return JSON.stringify({
-        cash: agent.current_cash,
-        initial_balance: agent.initial_balance,
-        positions_count: positions.length,
-        realized_pnl: totalRealizedPnl,
-        unrealized_pnl: unrealizedPnl,
-        total_portfolio_value: agent.current_cash + unrealizedPnl,
+        cash: portfolio.cash, initial_balance: portfolio.initial_balance,
+        positions_count: portfolio.positions.length,
+        realized_pnl: portfolio.realized_pnl, unrealized_pnl: portfolio.unrealized_pnl,
+        total_portfolio_value: portfolio.total_portfolio_value,
       });
     },
     pm_buy: async (args) => {
-      const outcomeId = String(args.outcome_id);
-      const amount = Number(args.amount);
-      const agentContext = args.agent_context ? String(args.agent_context) : undefined;
-
-      // Check agent has enough cash
-      const agent = agents.getAgent(db, agentId);
-      if (!agent) return JSON.stringify({ error: 'Agent not found' });
-      const maxOrderSize = agent.initial_balance * 0.05; // 5% of bankroll
-      if (amount > maxOrderSize) {
-        return JSON.stringify({ error: `Order too large. Max order size is $${maxOrderSize.toFixed(0)} (5% of bankroll). Requested: $${amount}` });
-      }
-      if (agent.current_cash < amount) {
-        return JSON.stringify({ error: `Insufficient cash. Have $${agent.current_cash.toFixed(2)}, need $${amount}` });
-      }
-
-      // Fetch live order book and simulate fill
-      const orderBook = await api.getOrderBook(outcomeId);
-      if (orderBook.asks.length === 0) {
-        return JSON.stringify({ error: 'No asks in order book — cannot buy' });
-      }
-      const fill = simulateBuy(orderBook.asks, { amount });
-      if (fill.filled_shares === 0) {
-        return JSON.stringify({ error: 'Could not fill any shares at current prices' });
-      }
-
-      // Reject if slippage exceeds 5% of best ask price
-      const bestAsk = orderBook.asks[0].price;
-      const slippagePct = fill.slippage / bestAsk;
-      if (slippagePct > 0.05) {
-        return JSON.stringify({
-          error: `Order rejected: slippage too high (${(slippagePct * 100).toFixed(1)}%). Best ask: $${bestAsk.toFixed(3)}, avg fill: $${fill.avg_fill_price.toFixed(3)}. Reduce order size or find a deeper book.`,
-          best_ask: bestAsk,
-          avg_fill_price: fill.avg_fill_price,
-          slippage: fill.slippage,
-          slippage_pct: slippagePct,
-          levels_consumed: fill.levels_consumed,
-        });
-      }
-
-      // Record snapshot if context provided
-      if (agentContext) {
-        snapshots.insertSnapshot(db, agentId, outcomeId, agentContext,
-          JSON.stringify({ mid_price: orderBook.mid_price, spread: orderBook.spread, best_ask: orderBook.asks[0]?.price }));
-      }
-
-      // Deduct cash
-      agents.updateAgentCash(db, agentId, -fill.filled_amount);
-
-      // Record order as filled
-      const orderId = trades.insertOrder(db, {
-        agent_id: agentId,
-        outcome_id: outcomeId,
-        side: 'buy',
-        order_type: 'market',
-        requested_amount: amount,
-        filled_amount: fill.filled_amount,
-        filled_shares: fill.filled_shares,
-        avg_fill_price: fill.avg_fill_price,
-        status: 'filled',
-      });
-
-      // Update position — merge with existing if any
-      const existingPos = trades.getPosition(db, agentId, outcomeId);
-      if (existingPos && existingPos.shares > 0) {
-        const totalShares = existingPos.shares + fill.filled_shares;
-        const totalCost = (existingPos.shares * existingPos.avg_entry_price) + fill.filled_amount;
-        trades.upsertPosition(db, agentId, outcomeId, totalShares, totalCost / totalShares);
-      } else {
-        trades.upsertPosition(db, agentId, outcomeId, fill.filled_shares, fill.avg_fill_price);
-      }
-
-      return JSON.stringify({
-        order_id: orderId,
-        status: 'filled',
-        filled_shares: fill.filled_shares,
-        filled_amount: fill.filled_amount,
-        avg_fill_price: fill.avg_fill_price,
-        slippage: fill.slippage,
-        levels_consumed: fill.levels_consumed,
-        remaining_cash: agent.current_cash - fill.filled_amount,
-      });
+      const result = await tradingService.buy(
+        'polymarket', agentId, String(args.outcome_id),
+        Number(args.amount), args.agent_context ? String(args.agent_context) : undefined
+      );
+      return JSON.stringify(result);
     },
     pm_sell: async (args) => {
-      const outcomeId = String(args.outcome_id);
-      const requestedShares = Number(args.shares);
-      const agentContext = args.agent_context ? String(args.agent_context) : undefined;
-
-      const position = trades.getPosition(db, agentId, outcomeId);
-      if (!position || position.shares <= 0) {
-        return JSON.stringify({ error: 'No position found for this outcome' });
-      }
-      const sharesToSell = Math.min(requestedShares, position.shares);
-
-      // Fetch live order book and simulate fill
-      const orderBook = await api.getOrderBook(outcomeId);
-      if (orderBook.bids.length === 0) {
-        return JSON.stringify({ error: 'No bids in order book — cannot sell' });
-      }
-      const fill = simulateSell(orderBook.bids, sharesToSell);
-      if (fill.filled_shares === 0) {
-        return JSON.stringify({ error: 'Could not fill any shares at current prices' });
-      }
-
-      // Record snapshot if context provided
-      if (agentContext) {
-        snapshots.insertSnapshot(db, agentId, outcomeId, agentContext,
-          JSON.stringify({ mid_price: orderBook.mid_price, spread: orderBook.spread, best_bid: orderBook.bids[0]?.price }));
-      }
-
-      // Add proceeds to cash
-      agents.updateAgentCash(db, agentId, fill.filled_amount);
-
-      // Record order as filled
-      const orderId = trades.insertOrder(db, {
-        agent_id: agentId,
-        outcome_id: outcomeId,
-        side: 'sell',
-        order_type: 'market',
-        requested_shares: sharesToSell,
-        filled_amount: fill.filled_amount,
-        filled_shares: fill.filled_shares,
-        avg_fill_price: fill.avg_fill_price,
-        status: 'filled',
-      });
-
-      // Calculate P&L
-      const pnl = (fill.avg_fill_price - position.avg_entry_price) * fill.filled_shares;
-
-      // Update or close position
-      const remainingShares = position.shares - fill.filled_shares;
-      trades.upsertPosition(db, agentId, outcomeId, remainingShares, position.avg_entry_price);
-
-      // Record trade in history
-      const outcome = trades.getOutcomeById(db, outcomeId);
-      const market = outcome ? trades.getMarketByOutcomeId(db, outcomeId) : undefined;
-      trades.recordTrade(db, {
-        agent_id: agentId,
-        outcome_id: outcomeId,
-        market_question: market?.question ?? 'Unknown',
-        outcome_name: outcome?.name ?? 'Unknown',
-        entry_price: position.avg_entry_price,
-        exit_price: fill.avg_fill_price,
-        shares: fill.filled_shares,
-        realized_pnl: pnl,
-        reason: 'sold',
-        snapshot_id: null,
-        opened_at: position.updated_at ?? new Date().toISOString(),
-      });
-
-      // Auto-post to trade-results channel
-      try {
-        const tradeResultsChannel = db.prepare("SELECT channel_id FROM channels WHERE name = 'trade-results'").get() as { channel_id: number } | undefined;
-        if (tradeResultsChannel) {
-          const pnlSign = pnl >= 0 ? '+' : '';
-          const post = `**Trade Closed** | ${market?.question ?? 'Unknown'} (${outcome?.name ?? '?'})\nEntry: $${position.avg_entry_price.toFixed(3)} → Exit: $${fill.avg_fill_price.toFixed(3)} | ${fill.filled_shares.toFixed(1)} shares | P&L: ${pnlSign}$${pnl.toFixed(2)}`;
-          channels.createPost(db, tradeResultsChannel.channel_id, agentId, post);
-        }
-      } catch { /* don't fail the trade if posting fails */ }
-
-      return JSON.stringify({
-        order_id: orderId,
-        status: 'filled',
-        filled_shares: fill.filled_shares,
-        filled_amount: fill.filled_amount,
-        avg_fill_price: fill.avg_fill_price,
-        slippage: fill.slippage,
-        pnl,
-      });
+      const result = await tradingService.sell(
+        'polymarket', agentId, String(args.outcome_id),
+        Number(args.shares), args.agent_context ? String(args.agent_context) : undefined
+      );
+      return JSON.stringify(result);
     },
     pm_orders: async () => {
       const pending = trades.getPendingOrders(db, agentId);
@@ -659,9 +551,6 @@ function buildPmHandlers(
 }
 
 function buildWorkspaceHandlers(agentId: string): Record<string, ToolHandler> {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
-  const { execSync } = require('child_process') as typeof import('child_process');
 
   const workspaceDir = path.join(process.cwd(), 'data', 'workspaces', agentId);
   fs.mkdirSync(workspaceDir, { recursive: true });
@@ -711,6 +600,78 @@ function buildWorkspaceHandlers(agentId: string): Record<string, ToolHandler> {
         const e = err as { stderr?: string; message?: string };
         return JSON.stringify({ error: e.stderr || e.message || 'Execution failed' });
       }
+    },
+  };
+}
+
+function buildMarketDataHandlers(alphaVantageKey: string, fredKey: string): Record<string, ToolHandler> {
+  const BINANCE = 'https://data-api.binance.vision/api/v3';
+  const AV = 'https://www.alphavantage.co/query';
+  const FRED = 'https://api.stlouisfed.org/fred/series/observations';
+
+  return {
+    crypto_price: async (args) => {
+      const symbol = String(args.symbol).toUpperCase();
+      const res = await fetch(`${BINANCE}/ticker/24hr?symbol=${symbol}`);
+      if (!res.ok) return JSON.stringify({ error: `Binance error ${res.status} for ${symbol}` });
+      const d = await res.json() as Record<string, string>;
+      return JSON.stringify({
+        symbol,
+        price: d.lastPrice,
+        change_24h: `${Number(d.priceChangePercent).toFixed(2)}%`,
+        high_24h: d.highPrice,
+        low_24h: d.lowPrice,
+        volume_24h: `$${(Number(d.quoteVolume) / 1e6).toFixed(1)}M`,
+      });
+    },
+    crypto_history: async (args) => {
+      const symbol = String(args.symbol).toUpperCase();
+      const interval = String(args.interval || '1d');
+      const limit = Math.min(Number(args.limit) || 30, 100);
+      const res = await fetch(`${BINANCE}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+      if (!res.ok) return JSON.stringify({ error: `Binance error ${res.status}` });
+      const klines = await res.json() as Array<Array<string | number>>;
+      return JSON.stringify(klines.map(k => ({
+        date: new Date(k[0] as number).toISOString().split('T')[0],
+        open: k[1], high: k[2], low: k[3], close: k[4],
+        volume: `$${(Number(k[7]) / 1e6).toFixed(1)}M`,
+      })));
+    },
+    stock_price: async (args) => {
+      if (!alphaVantageKey) return JSON.stringify({ error: 'Alpha Vantage API key not configured' });
+      const symbol = String(args.symbol).toUpperCase();
+      const res = await fetch(`${AV}?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${alphaVantageKey}`);
+      if (!res.ok) return JSON.stringify({ error: `Alpha Vantage error ${res.status}` });
+      const d = await res.json() as { 'Global Quote'?: Record<string, string> };
+      const q = d['Global Quote'];
+      if (!q || !q['05. price']) return JSON.stringify({ error: `No data for ${symbol}` });
+      return JSON.stringify({
+        symbol,
+        price: q['05. price'],
+        change: q['09. change'],
+        change_pct: q['10. change percent'],
+        volume: q['06. volume'],
+        prev_close: q['08. previous close'],
+      });
+    },
+    stock_top_movers: async () => {
+      if (!alphaVantageKey) return JSON.stringify({ error: 'Alpha Vantage API key not configured' });
+      const res = await fetch(`${AV}?function=TOP_GAINERS_LOSERS&apikey=${alphaVantageKey}`);
+      if (!res.ok) return JSON.stringify({ error: `Alpha Vantage error ${res.status}` });
+      const d = await res.json() as { top_gainers?: Array<Record<string, string>>; top_losers?: Array<Record<string, string>> };
+      return JSON.stringify({
+        top_gainers: (d.top_gainers ?? []).slice(0, 5).map(s => ({ symbol: s.ticker, price: s.price, change: s.change_percentage })),
+        top_losers: (d.top_losers ?? []).slice(0, 5).map(s => ({ symbol: s.ticker, price: s.price, change: s.change_percentage })),
+      });
+    },
+    econ_data: async (args) => {
+      if (!fredKey) return JSON.stringify({ error: 'FRED API key not configured' });
+      const seriesId = String(args.series_id).toUpperCase();
+      const limit = Math.min(Number(args.limit) || 10, 50);
+      const res = await fetch(`${FRED}?series_id=${seriesId}&api_key=${fredKey}&file_type=json&sort_order=desc&limit=${limit}`);
+      if (!res.ok) return JSON.stringify({ error: `FRED error ${res.status}` });
+      const d = await res.json() as { observations?: Array<{ date: string; value: string }> };
+      return JSON.stringify((d.observations ?? []).map(o => ({ date: o.date, value: o.value })));
     },
   };
 }
@@ -810,6 +771,11 @@ export function buildToolRegistry(
 ): ToolRegistry {
   const registry = createToolRegistry();
 
+  // Create and configure the trading service
+  const tradingService = new TradingService(db);
+  tradingService.registerPlatform(new PolymarketPlatform());
+  tradingService.registerPlatform(new BinancePlatform());
+
   // Get enabled capabilities for this config version
   const enabledCaps = getVersionCapabilities(db, configVersionId)
     .filter(c => c.enabled === 1)
@@ -821,7 +787,7 @@ export function buildToolRegistry(
   // Build all handler maps
   const allHandlers: Record<string, { handler: ToolHandler; def: ToolDef; platform: string }> = {};
 
-  const pmHandlers = buildPmHandlers(db, agentId);
+  const pmHandlers = buildPmHandlers(db, agentId, tradingService);
   for (const [name, handler] of Object.entries(pmHandlers)) {
     if (PM_TOOL_DEFS[name]) {
       allHandlers[name] = { handler, def: PM_TOOL_DEFS[name], platform: 'polymarket' };
@@ -861,6 +827,14 @@ export function buildToolRegistry(
   for (const [name, handler] of Object.entries(workspaceHandlers)) {
     if (WORKSPACE_TOOL_DEFS[name]) {
       allHandlers[name] = { handler, def: WORKSPACE_TOOL_DEFS[name], platform: 'workspace' };
+    }
+  }
+
+  const marketConfig = getToolConfig(db, 'Market Data');
+  const marketHandlers = buildMarketDataHandlers(marketConfig.alpha_vantage_key ?? '', marketConfig.fred_key ?? '');
+  for (const [name, handler] of Object.entries(marketHandlers)) {
+    if (MARKET_DATA_TOOL_DEFS[name]) {
+      allHandlers[name] = { handler, def: MARKET_DATA_TOOL_DEFS[name], platform: 'markets' };
     }
   }
 

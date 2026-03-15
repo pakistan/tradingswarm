@@ -270,6 +270,16 @@ export function migrate(db: Database.Database): void {
     db.exec('ALTER TABLE tools ADD COLUMN config_json TEXT');
   }
 
+  // Add platform column to orders and positions (multi-platform support)
+  const orderCols = db.prepare("PRAGMA table_info(orders)").all() as { name: string }[];
+  if (!orderCols.find(c => c.name === 'platform')) {
+    db.exec("ALTER TABLE orders ADD COLUMN platform TEXT NOT NULL DEFAULT 'polymarket'");
+  }
+  const posCols = db.prepare("PRAGMA table_info(positions)").all() as { name: string }[];
+  if (!posCols.find(c => c.name === 'platform')) {
+    db.exec("ALTER TABLE positions ADD COLUMN platform TEXT NOT NULL DEFAULT 'polymarket'");
+  }
+
   // Seed tools if empty
   const toolCount = (db.prepare('SELECT COUNT(*) as c FROM tools').get() as { c: number }).c;
   if (toolCount === 0) {

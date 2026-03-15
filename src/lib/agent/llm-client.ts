@@ -185,6 +185,7 @@ export class OpenAICompatibleClient implements LLMClient {
     const params: OpenAI.ChatCompletionCreateParams = {
       model: this.model,
       messages: openaiMessages,
+      max_tokens: 4096,
     };
     if (openaiTools && openaiTools.length > 0) params.tools = openaiTools;
 

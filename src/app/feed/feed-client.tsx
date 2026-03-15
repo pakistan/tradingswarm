@@ -54,13 +54,115 @@ function matchesFilter(event: FeedEvent, filter: FilterPreset, selectedAgent: st
   }
 }
 
+function formatToolCallArgs(name: string, args: Record<string, unknown>): string {
+  const a = args ?? {};
+  switch (name) {
+    case 'pm_markets': return a.offset ? `browsing markets (page ${Math.floor(Number(a.offset) / 20) + 1})` : 'browsing top markets';
+    case 'pm_search': return `searching "${a.query}"`;
+    case 'pm_market_detail': return `looking up market ${String(a.market_id ?? '').slice(0, 8)}...`;
+    case 'pm_orderbook': return `checking order book for ${String(a.outcome_id ?? '').slice(0, 12)}...`;
+    case 'pm_price_history': return `checking price history (${a.interval ?? '1h'})`;
+    case 'pm_buy': return `buying $${a.amount} of ${String(a.outcome_id ?? '').slice(0, 12)}...`;
+    case 'pm_sell': return `selling ${a.shares} shares of ${String(a.outcome_id ?? '').slice(0, 12)}...`;
+    case 'pm_balance': return 'checking balance';
+    case 'pm_positions': return 'checking positions';
+    case 'pm_history': return 'reviewing trade history';
+    case 'pm_leaderboard': return 'checking leaderboard';
+    case 'pm_orders': return 'checking pending orders';
+    case 'pm_cancel_order': return `cancelling order #${a.order_id}`;
+    case 'pm_cancel_all': return 'cancelling all orders';
+    case 'pm_snapshot': return 'recording trade snapshot';
+    case 'web_search': return `searching web: "${a.query}"`;
+    case 'hub_list_channels': return 'listing channels';
+    case 'hub_read': return `reading channel #${a.channel_id}`;
+    case 'hub_post': return `posting to channel #${a.channel_id}`;
+    case 'memory_get': return 'recalling memory';
+    case 'memory_set': return `remembering: ${a.topic}`;
+    case 'notepad_read': return `reading ${a.path}`;
+    case 'notepad_write': return `writing ${a.path}`;
+    case 'notepad_list': return 'listing workspace files';
+    case 'run_code': return `running ${a.path}`;
+    default: return `${name}(${Object.keys(a).join(', ')})`;
+  }
+}
+
+function formatToolResult(name: string, resultStr: string): string {
+  try {
+    const data = JSON.parse(resultStr);
+    if (data.error) return `Error: ${data.error}`;
+
+    if (name === 'pm_markets' && Array.isArray(data)) {
+      if (data.length === 0) return 'No markets found';
+      return data.slice(0, 5).map((m: { question?: string; outcomePrices?: string }) => {
+        const prices = m.outcomePrices ? JSON.parse(m.outcomePrices as string) : [];
+        return `• ${m.question ?? '?'}${prices.length ? ` (${prices.map((p: string) => `${(parseFloat(p) * 100).toFixed(0)}%`).join(' / ')})` : ''}`;
+      }).join('\n') + (data.length > 5 ? `\n...and ${data.length - 5} more` : '');
+    }
+    if (name === 'pm_balance') {
+      return `Cash: $${Number(data.cash).toFixed(0)} | Positions: ${data.positions_count} | P&L: $${Number(data.realized_pnl).toFixed(2)} realized, $${Number(data.unrealized_pnl).toFixed(2)} unrealized | Portfolio: $${Number(data.total_portfolio_value).toFixed(0)}`;
+    }
+    if (name === 'pm_positions' && Array.isArray(data)) {
+      if (data.length === 0) return 'No open positions';
+      return data.map((p: { outcome_id?: string; shares?: number; avg_entry_price?: number; unrealized_pnl?: number }) =>
+        `• ${String(p.outcome_id ?? '').slice(0, 12)}... | ${p.shares?.toFixed(1)} shares @ $${p.avg_entry_price?.toFixed(3)} | P&L: $${p.unrealized_pnl?.toFixed(2)}`
+      ).join('\n');
+    }
+    if (name === 'pm_buy' || name === 'pm_sell') {
+      if (data.status === 'filled') {
+        const pnl = data.pnl !== undefined ? ` | P&L: $${Number(data.pnl).toFixed(2)}` : '';
+        return `Filled ${data.filled_shares?.toFixed(1)} shares @ $${data.avg_fill_price?.toFixed(3)} ($${data.filled_amount?.toFixed(2)}) | Slippage: ${(data.slippage * 100)?.toFixed(1)}%${pnl}`;
+      }
+      return data.message ?? JSON.stringify(data);
+    }
+    if (name === 'pm_orderbook') {
+      return `Mid: $${Number(data.mid_price).toFixed(3)} | Spread: $${Number(data.spread).toFixed(3)} | Bid liquidity: $${Number(data.total_bid_liquidity).toFixed(0)} | Ask liquidity: $${Number(data.total_ask_liquidity).toFixed(0)}`;
+    }
+    if (name === 'web_search' && Array.isArray(data)) {
+      if (data.length === 0) return 'No results';
+      return data.slice(0, 3).map((r: { title?: string; snippet?: string }) =>
+        `• ${r.title ?? '?'}\n  ${(r.snippet ?? '').slice(0, 120)}${(r.snippet ?? '').length > 120 ? '...' : ''}`
+      ).join('\n');
+    }
+    if (name === 'hub_list_channels' && Array.isArray(data)) {
+      return data.map((c: { name?: string; post_count?: number }) => `#${c.name} (${c.post_count ?? 0} posts)`).join(', ');
+    }
+    if (name === 'memory_get' && Array.isArray(data)) {
+      if (data.length === 0) return 'No memories stored yet';
+      return data.map((m: { topic?: string }) => `• ${m.topic}`).join('\n');
+    }
+    if (name === 'notepad_list' && Array.isArray(data)) {
+      if (data.length === 0) return 'Workspace is empty';
+      return data.join(', ');
+    }
+    if (name === 'pm_history' && Array.isArray(data)) {
+      if (data.length === 0) return 'No trade history';
+      return data.slice(0, 5).map((t: { market_question?: string; realized_pnl?: number }) =>
+        `• ${t.market_question ?? '?'} → $${Number(t.realized_pnl).toFixed(2)}`
+      ).join('\n');
+    }
+    if (name === 'pm_market_detail') {
+      return `${data.question ?? '?'}\n${data.description ? data.description.slice(0, 200) + (data.description.length > 200 ? '...' : '') : ''}`;
+    }
+    // Fallback: truncate
+    const str = JSON.stringify(data);
+    return str.length > 300 ? str.slice(0, 300) + '...' : str;
+  } catch {
+    return resultStr.length > 300 ? resultStr.slice(0, 300) + '...' : resultStr;
+  }
+}
+
 function formatContent(type: string, data: Record<string, unknown> | null): string {
   if (!data) return '';
   if (type === 'thinking') return String(data.content ?? '');
-  if (type === 'tool_call') return `${data.tool_name}(${JSON.stringify(data.arguments ?? {})})`;
+  if (type === 'tool_call') {
+    const name = String(data.tool_name ?? '');
+    const args = (data.arguments ?? {}) as Record<string, unknown>;
+    return formatToolCallArgs(name, args);
+  }
   if (type === 'tool_result') {
+    const name = String(data.tool_name ?? '');
     const result = String(data.result ?? '');
-    return `${data.tool_name} → ${result.length > 400 ? result.slice(0, 400) + '...' : result}`;
+    return formatToolResult(name, result);
   }
   if (type === 'error') return String(data.error ?? data.message ?? JSON.stringify(data));
   if (type === 'loop_start') return data.message ? String(data.message) : 'New cycle';
@@ -198,6 +300,18 @@ export function FeedClient({ agentIds }: Props) {
                   {EVENT_LABELS[event.type] ?? event.type}
                 </span>
                 <AgentBadge name={event.agentId} />
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(event.content);
+                    const btn = e.currentTarget;
+                    btn.textContent = 'Copied';
+                    setTimeout(() => { btn.textContent = 'Copy'; }, 1000);
+                  }}
+                  className="text-[0.55rem] text-gray-300 hover:text-gray-500 transition-colors"
+                >
+                  Copy
+                </button>
                 <span className="text-[0.55rem] text-gray-300 ml-auto">
                   {event.time.split(' ')[1] ?? event.time}
                 </span>

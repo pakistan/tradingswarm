@@ -108,6 +108,7 @@ export interface OrderRow {
   escrowed_entry_price: number | null;
   snapshot_id: number | null;
   status: 'filled' | 'partial' | 'pending' | 'cancelled';
+  platform: string;
   created_at: string;
   filled_at: string | null;
 }
@@ -119,6 +120,7 @@ export interface PositionRow {
   avg_entry_price: number;
   current_price: number | null;
   unrealized_pnl: number | null;
+  platform: string;
   updated_at: string;
 }
 

@@ -44,6 +44,59 @@ export function resetShutdown(): void {
   shutdownRequested = false;
 }
 
+// ---- Compact old tool results to save context ----
+
+function compactToolResult(content: string): string {
+  try {
+    const data = JSON.parse(content);
+
+    // Array of markets → just questions
+    if (Array.isArray(data) && data.length > 0 && data[0]?.question) {
+      return `[${data.length} markets: ${data.slice(0, 5).map((m: { question?: string }) => m.question).join('; ')}${data.length > 5 ? '; ...' : ''}]`;
+    }
+
+    // Array of positions
+    if (Array.isArray(data) && data.length > 0 && data[0]?.shares !== undefined) {
+      return `[${data.length} positions]`;
+    }
+
+    // Array of web results
+    if (Array.isArray(data) && data.length > 0 && data[0]?.title && data[0]?.url) {
+      return `[${data.length} results: ${data.slice(0, 3).map((r: { title?: string }) => r.title).join('; ')}]`;
+    }
+
+    // Array of channel posts
+    if (Array.isArray(data) && data.length > 0 && data[0]?.content && data[0]?.agent_id) {
+      return `[${data.length} posts]`;
+    }
+
+    // Empty array
+    if (Array.isArray(data) && data.length === 0) return '[]';
+
+    // Balance object
+    if (data.cash !== undefined && data.total_portfolio_value !== undefined) {
+      return `[balance: $${Number(data.cash).toFixed(0)}, portfolio: $${Number(data.total_portfolio_value).toFixed(0)}]`;
+    }
+
+    // Orderbook
+    if (data.mid_price !== undefined && data.spread !== undefined) {
+      return `[orderbook: mid=$${Number(data.mid_price).toFixed(3)}, spread=$${Number(data.spread).toFixed(3)}]`;
+    }
+
+    // Trade fill
+    if (data.filled_shares !== undefined && data.avg_fill_price !== undefined) {
+      return `[filled ${Number(data.filled_shares).toFixed(1)} shares @ $${Number(data.avg_fill_price).toFixed(3)}]`;
+    }
+
+    // Generic object — keep first 150 chars
+    const str = JSON.stringify(data);
+    return str.length > 150 ? str.slice(0, 150) + '...]' : str;
+  } catch {
+    // Not JSON — just truncate
+    return content.length > 150 ? content.slice(0, 150) + '...' : content;
+  }
+}
+
 // ---- Build system prompt ----
 
 export function buildSystemPrompt(
@@ -150,11 +203,25 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
         // e. Initialize conversation
         const conversation: Message[] = [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: 'Execute your next trading cycle. Review markets, check positions, and make any trades you see fit.' },
+          { role: 'user', content: `Today is ${new Date().toISOString().split('T')[0]}. You are waking up for a new cycle. Recall your hypotheses and memory. What deserves your attention? When you research, compare what you find to actual market prices — if you believe the true probability differs from the market price, that's a potential trade.` },
         ];
 
         // f. Conversation loop (tool call rounds)
         for (let iteration = 0; iteration < maxIterations; iteration++) {
+          // Compact old tool results — the agent already processed them, shrink to summaries
+          // Keep the most recent 6 messages at full fidelity, compact everything before that
+          if (conversation.length > 8) {
+            const cutoff = conversation.length - 6;
+            for (let i = 1; i < cutoff; i++) {
+              if (conversation[i].role === 'tool' && conversation[i].content.length > 200) {
+                conversation[i] = {
+                  ...conversation[i],
+                  content: compactToolResult(conversation[i].content),
+                };
+              }
+            }
+          }
+
           const response = await llmClient.chat(conversation, registry.getDefinitions());
 
           // Log thinking

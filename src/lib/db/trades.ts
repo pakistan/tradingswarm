@@ -77,13 +77,14 @@ export function insertOrder(
     escrowed_entry_price?: number;
     snapshot_id?: number;
     status: 'filled' | 'partial' | 'pending' | 'cancelled';
+    platform?: string;
   }
 ): number {
   const result = db.prepare(`
     INSERT INTO orders (agent_id, outcome_id, side, order_type, requested_amount, requested_shares,
       limit_price, filled_amount, filled_shares, avg_fill_price, slippage, escrowed_entry_price,
-      snapshot_id, status, filled_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      snapshot_id, status, platform, filled_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
       CASE WHEN ? = 'filled' THEN datetime('now') ELSE NULL END)
   `).run(
     order.agent_id,
@@ -100,6 +101,7 @@ export function insertOrder(
     order.escrowed_entry_price ?? null,
     order.snapshot_id ?? null,
     order.status,
+    order.platform ?? 'polymarket',
     order.status
   );
   return Number(result.lastInsertRowid);
@@ -169,20 +171,22 @@ export function upsertPosition(
   agentId: string,
   outcomeId: string,
   shares: number,
-  avgEntryPrice: number
+  avgEntryPrice: number,
+  platform = 'polymarket'
 ): void {
   if (shares <= 0) {
     db.prepare(`DELETE FROM positions WHERE agent_id = ? AND outcome_id = ?`).run(agentId, outcomeId);
     return;
   }
   db.prepare(`
-    INSERT INTO positions (agent_id, outcome_id, shares, avg_entry_price, updated_at)
-    VALUES (?, ?, ?, ?, datetime('now'))
+    INSERT INTO positions (agent_id, outcome_id, shares, avg_entry_price, platform, updated_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(agent_id, outcome_id) DO UPDATE SET
       shares = excluded.shares,
       avg_entry_price = excluded.avg_entry_price,
+      platform = excluded.platform,
       updated_at = datetime('now')
-  `).run(agentId, outcomeId, shares, avgEntryPrice);
+  `).run(agentId, outcomeId, shares, avgEntryPrice, platform);
 }
 
 export function getPosition(
