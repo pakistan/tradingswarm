@@ -210,3 +210,23 @@ export function createModelProvider(
 export function listModelProviders(db: Database.Database): ModelProviderRow[] {
   return db.prepare(`SELECT * FROM model_providers ORDER BY provider_id`).all() as ModelProviderRow[];
 }
+
+export function updateModelProvider(
+  db: Database.Database,
+  providerId: number,
+  data: { api_key?: string; default_model?: string; enabled?: boolean }
+): void {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (data.api_key !== undefined) { sets.push('api_key = ?'); params.push(data.api_key); }
+  if (data.default_model !== undefined) { sets.push('default_model = ?'); params.push(data.default_model); }
+  if (data.enabled !== undefined) { sets.push('enabled = ?'); params.push(data.enabled ? 1 : 0); }
+  if (sets.length === 0) return;
+  params.push(providerId);
+  db.prepare(`UPDATE model_providers SET ${sets.join(', ')} WHERE provider_id = ?`).run(...params);
+}
+
+export function deleteRule(db: Database.Database, ruleId: number): void {
+  db.prepare(`DELETE FROM config_version_rules WHERE rule_id = ?`).run(ruleId);
+  db.prepare(`DELETE FROM rules WHERE rule_id = ?`).run(ruleId);
+}

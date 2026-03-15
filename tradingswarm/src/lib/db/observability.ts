@@ -108,6 +108,15 @@ export function getEvents(
   ).all(agentId, limit) as AgentEventRow[];
 }
 
+export function getRecentEvents(
+  db: Database.Database,
+  limit = 20
+): AgentEventRow[] {
+  return db.prepare(
+    `SELECT * FROM agent_events ORDER BY id DESC LIMIT ?`
+  ).all(limit) as AgentEventRow[];
+}
+
 // ---- Daily Snapshots ----
 
 export function insertDailySnapshot(
