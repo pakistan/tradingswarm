@@ -6,6 +6,7 @@ import { getLatestVersion } from '@/lib/db/configs';
 import { TradingService } from '@/lib/trading/service';
 import { PolymarketPlatform } from '@/lib/platforms/polymarket/adapter';
 import { BinancePlatform } from '@/lib/platforms/binance/adapter';
+import { KalshiPlatform } from '@/lib/platforms/kalshi/adapter';
 import { StatCard } from '@/components/stat-card';
 import { LeaderboardRow as LeaderboardRowComponent } from '@/components/leaderboard-row';
 import { ActivityItem } from '@/components/activity-item';
@@ -19,6 +20,7 @@ export default function DashboardPage() {
   const service = new TradingService(db);
   service.registerPlatform(new PolymarketPlatform());
   service.registerPlatform(new BinancePlatform());
+  service.registerPlatform(new KalshiPlatform());
   const swarm = service.getSwarmSummary();
 
   const activeCount = agents.filter(a => a.status === 'running').length;
@@ -145,7 +147,10 @@ export default function DashboardPage() {
                       <td className="py-2 px-4 font-mono text-gray-700">{p.agent_id.replace('agent-','')}</td>
                       <td className="py-2 px-4">
                         <span className={`text-[0.6rem] font-semibold px-2 py-0.5 rounded-full ${
-                          p.platform === 'binance' ? 'bg-yellow-50 text-yellow-700' : 'bg-primary/10 text-primary'
+                          p.platform === 'binance' ? 'bg-yellow-50 text-yellow-700' :
+                          p.platform === 'kalshi' ? 'bg-blue-50 text-blue-700' :
+                          p.platform === 'stocks' ? 'bg-emerald-50 text-emerald-700' :
+                          'bg-primary/10 text-primary'
                         }`}>{p.platform}</span>
                       </td>
                       <td className="py-2 px-4 text-gray-600 max-w-[200px] truncate">{p.market_question ?? p.outcome_id.slice(0,16)+'...'}</td>

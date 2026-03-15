@@ -11,6 +11,8 @@ import { TradingService } from '@/lib/trading/service';
 import { MarketScanner, type SpreadSignal } from '@/lib/trading/scanner';
 import { PolymarketPlatform } from '@/lib/platforms/polymarket/adapter';
 import { BinancePlatform } from '@/lib/platforms/binance/adapter';
+import { KalshiPlatform } from '@/lib/platforms/kalshi/adapter';
+import { StocksPlatform } from '@/lib/platforms/stocks/adapter';
 import type { GammaMarket } from '@/lib/platforms/polymarket/types';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -339,6 +341,58 @@ const MARKET_DATA_TOOL_DEFS: Record<string, ToolDef> = {
       required: ['symbol', 'shares'],
     },
   },
+  kalshi_buy: {
+    name: 'kalshi_buy',
+    description: 'Paper trade: buy shares on a Kalshi market.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ticker: { type: 'string', description: 'Kalshi market ticker' },
+        amount: { type: 'number', description: 'Dollar amount to spend (max $500)' },
+        agent_context: { type: 'string', description: 'Your reasoning' },
+      },
+      required: ['ticker', 'amount'],
+    },
+  },
+  kalshi_sell: {
+    name: 'kalshi_sell',
+    description: 'Paper trade: sell shares on a Kalshi market you hold.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ticker: { type: 'string', description: 'Kalshi market ticker' },
+        shares: { type: 'number', description: 'Number of shares to sell' },
+        agent_context: { type: 'string', description: 'Your reasoning' },
+      },
+      required: ['ticker', 'shares'],
+    },
+  },
+  stock_buy: {
+    name: 'stock_buy',
+    description: 'Paper trade: buy stock/ETF shares.',
+    parameters: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Ticker symbol, e.g. SPY, AAPL, XLE, GLD, TLT' },
+        amount: { type: 'number', description: 'Dollar amount to spend (max $500)' },
+        agent_context: { type: 'string', description: 'Your reasoning' },
+      },
+      required: ['symbol', 'amount'],
+    },
+  },
+  stock_sell: {
+    name: 'stock_sell',
+    description: 'Paper trade: sell stock/ETF shares you hold.',
+    parameters: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Ticker symbol' },
+        shares: { type: 'number', description: 'Number of shares to sell' },
+        agent_context: { type: 'string', description: 'Your reasoning' },
+      },
+      required: ['symbol', 'shares'],
+    },
+  },
   kalshi_markets: {
     name: 'kalshi_markets',
     description: 'Browse prediction markets on Kalshi (another prediction market platform). Compare prices to Polymarket.',
@@ -360,11 +414,11 @@ const MARKET_DATA_TOOL_DEFS: Record<string, ToolDef> = {
   },
   scan_spreads: {
     name: 'scan_spreads',
-    description: 'Scan for cross-market discrepancies. Returns signals where different markets disagree about the same thing.',
+    description: 'Get pre-computed cross-market spread signals. Returns pairs of markets/assets that disagree about the same thing, ranked by spread size.',
     parameters: {
       type: 'object',
       properties: {
-        type: { type: 'string', description: 'Scan type: "complements" (YES+NO!=1), "cross_platform" (Polymarket vs Kalshi), "crypto" (prediction markets vs crypto prices), or "all"' },
+        min_spread: { type: 'number', description: 'Minimum spread in points to show (default 0)' },
       },
     },
   },
@@ -837,6 +891,9 @@ export function buildToolRegistry(
   const tradingService = new TradingService(db);
   tradingService.registerPlatform(new PolymarketPlatform());
   tradingService.registerPlatform(new BinancePlatform());
+  tradingService.registerPlatform(new KalshiPlatform());
+  const avKey = getToolConfig(db, 'Alpha Vantage').api_key ?? '';
+  if (avKey) tradingService.registerPlatform(new StocksPlatform(avKey));
 
   // Get enabled capabilities for this config version
   const enabledCaps = getVersionCapabilities(db, configVersionId)
@@ -924,33 +981,70 @@ export function buildToolRegistry(
     }
   }
 
+  // Kalshi trading handlers
+  const kalshiTradeHandlers: Record<string, ToolHandler> = {
+    kalshi_buy: async (args) => {
+      const result = await tradingService.buy(
+        'kalshi', agentId, String(args.ticker),
+        Number(args.amount), args.agent_context ? String(args.agent_context) : undefined
+      );
+      return JSON.stringify(result);
+    },
+    kalshi_sell: async (args) => {
+      const result = await tradingService.sell(
+        'kalshi', agentId, String(args.ticker),
+        Number(args.shares), args.agent_context ? String(args.agent_context) : undefined
+      );
+      return JSON.stringify(result);
+    },
+  };
+  for (const [name, handler] of Object.entries(kalshiTradeHandlers)) {
+    if (MARKET_DATA_TOOL_DEFS[name]) {
+      allHandlers[name] = { handler, def: MARKET_DATA_TOOL_DEFS[name], platform: 'kalshi' };
+    }
+  }
+
+  // Stock trading handlers
+  const stockTradeHandlers: Record<string, ToolHandler> = {
+    stock_buy: async (args) => {
+      const result = await tradingService.buy(
+        'stocks', agentId, String(args.symbol).toUpperCase(),
+        Number(args.amount), args.agent_context ? String(args.agent_context) : undefined
+      );
+      return JSON.stringify(result);
+    },
+    stock_sell: async (args) => {
+      const result = await tradingService.sell(
+        'stocks', agentId, String(args.symbol).toUpperCase(),
+        Number(args.shares), args.agent_context ? String(args.agent_context) : undefined
+      );
+      return JSON.stringify(result);
+    },
+  };
+  for (const [name, handler] of Object.entries(stockTradeHandlers)) {
+    if (MARKET_DATA_TOOL_DEFS[name]) {
+      allHandlers[name] = { handler, def: MARKET_DATA_TOOL_DEFS[name], platform: 'stocks' };
+    }
+  }
+
   // Scanner and cross-platform handlers
-  const scanner = new MarketScanner();
+  const scanner = new MarketScanner(db);
+  const kalshiApi = new (await import('@/lib/platforms/kalshi/api')).KalshiAPI();
   const scannerHandlers: Record<string, ToolHandler> = {
     scan_spreads: async (args) => {
-      const type = String(args.type || 'all');
-      const signals: SpreadSignal[] = [];
-      if (type === 'all' || type === 'complements') {
-        signals.push(...await scanner.scanComplements());
-      }
-      if (type === 'all' || type === 'cross_platform') {
-        signals.push(...await scanner.scanCrossPlatform());
-      }
-      if (type === 'all' || type === 'crypto') {
-        signals.push(...await scanner.scanCryptoSpreads());
-      }
-      if (signals.length === 0) return JSON.stringify({ message: 'No spread signals found' });
-      return JSON.stringify(signals.slice(0, 10));
+      const signals = scanner.scan(Number(args.min_spread) || 0);
+      if (signals.length === 0) return JSON.stringify({ message: 'No spread signals found. Run the indexer first via POST /api/indexer.' });
+      return JSON.stringify(signals);
     },
     kalshi_markets: async (args) => {
-      const events = await scanner['kalshi'].getEvents({
+      const events = await kalshiApi.getEvents({
         limit: Number(args.limit) || 20,
         category: args.category ? String(args.category) : undefined,
       });
       return JSON.stringify(events.map(e => ({
         title: e.title,
         category: e.category,
-        markets: e.markets.slice(0, 3).map(m => ({
+        markets: e.markets.filter(m => !m.title.includes(',yes ')).slice(0, 3).map(m => ({
           ticker: m.ticker,
           title: m.title,
           yes_price: m.yes_ask_dollars,
@@ -959,8 +1053,10 @@ export function buildToolRegistry(
       })));
     },
     forex_rates: async () => {
-      const rates = await scanner.getForexSnapshot();
-      return JSON.stringify(rates);
+      const res = await fetch('https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR,GBP,JPY,CNY,RUB,MXN,BRL');
+      if (!res.ok) return JSON.stringify({ error: 'Forex API error' });
+      const d = await res.json() as { rates: Record<string, number> };
+      return JSON.stringify(d.rates);
     },
   };
   for (const [name, handler] of Object.entries(scannerHandlers)) {

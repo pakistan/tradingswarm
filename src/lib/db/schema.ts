@@ -262,6 +262,35 @@ export function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_agent_events_created ON agent_events(created_at);
     CREATE INDEX IF NOT EXISTS idx_agent_events_type ON agent_events(agent_id, event_type, created_at);
     CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel_id);
+
+    -- Market Index (cross-platform asset registry with embeddings)
+    CREATE TABLE IF NOT EXISTS market_index (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      platform      TEXT NOT NULL,
+      asset_id      TEXT NOT NULL,
+      title         TEXT NOT NULL,
+      category      TEXT,
+      price         REAL,
+      embedding     BLOB,
+      metadata_json TEXT,
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(platform, asset_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS market_links (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      market_a_id   INTEGER NOT NULL REFERENCES market_index(id),
+      market_b_id   INTEGER NOT NULL REFERENCES market_index(id),
+      link_type     TEXT NOT NULL DEFAULT 'embedding',
+      similarity    REAL,
+      spread_points REAL,
+      reasoning     TEXT,
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(market_a_id, market_b_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_market_index_platform ON market_index(platform);
+    CREATE INDEX IF NOT EXISTS idx_market_links_spread ON market_links(spread_points DESC);
   `);
 
   // Add config_json column if missing (migration for existing DBs)

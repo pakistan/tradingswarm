@@ -1,144 +1,78 @@
-import { PolymarketAPI } from '@/lib/platforms/polymarket/api';
-import { KalshiAPI } from '@/lib/platforms/kalshi/api';
-
-const BINANCE = 'https://data-api.binance.vision/api/v3';
-const FRANKFURTER = 'https://api.frankfurter.dev/v1';
+import type Database from 'better-sqlite3';
+import { MarketIndexer } from './indexer';
 
 export interface SpreadSignal {
-  type: 'complement' | 'cross_platform' | 'cross_market';
-  description: string;
+  type: string;
+  market_a: string;
+  market_b: string;
+  platform_a: string;
+  platform_b: string;
+  price_a: number | null;
+  price_b: number | null;
   spread_points: number;
-  details: Record<string, unknown>;
+  similarity: number;
+  link_type: string;
 }
 
 export class MarketScanner {
-  private pm = new PolymarketAPI();
-  private kalshi = new KalshiAPI();
+  private db: Database.Database;
 
-  // Scan for YES+NO != $1.00 on Polymarket
-  async scanComplements(limit = 20): Promise<SpreadSignal[]> {
-    const signals: SpreadSignal[] = [];
-    const markets = await this.pm.listMarkets({ limit, closed: false });
-
-    for (const m of markets) {
-      if (!m.outcomePrices) continue;
-      try {
-        const prices = JSON.parse(m.outcomePrices) as string[];
-        const sum = prices.reduce((s, p) => s + parseFloat(p), 0);
-        const deviation = Math.abs(sum - 1.0);
-        if (deviation > 0.02) { // More than 2 cents off
-          signals.push({
-            type: 'complement',
-            description: `${m.question} — prices sum to $${sum.toFixed(3)} (should be $1.00). ${deviation > 0 ? 'Underpriced' : 'Overpriced'} by $${deviation.toFixed(3)}.`,
-            spread_points: Math.round(deviation * 100),
-            details: { market_id: m.id, question: m.question, prices, sum, clobTokenIds: m.clobTokenIds },
-          });
-        }
-      } catch { /* skip parse errors */ }
-    }
-
-    return signals.sort((a, b) => b.spread_points - a.spread_points);
+  constructor(db: Database.Database) {
+    this.db = db;
   }
 
-  // Compare similar markets between Polymarket and Kalshi
-  async scanCrossPlatform(): Promise<SpreadSignal[]> {
-    const signals: SpreadSignal[] = [];
+  // Read pre-computed signals from the index
+  scan(minSpread = 0): SpreadSignal[] {
+    const rows = this.db.prepare(`
+      SELECT
+        a.title as market_a, b.title as market_b,
+        a.platform as platform_a, b.platform as platform_b,
+        a.price as price_a, b.price as price_b,
+        ml.similarity, ml.spread_points, ml.link_type
+      FROM market_links ml
+      JOIN market_index a ON a.id = ml.market_a_id
+      JOIN market_index b ON b.id = ml.market_b_id
+      WHERE ml.spread_points >= ? OR ml.link_type = 'llm'
+      ORDER BY ml.spread_points DESC
+      LIMIT 20
+    `).all(minSpread) as any[];
 
-    // Get active Kalshi events in interesting categories
-    const kalshiEvents = await this.kalshi.getEvents({ limit: 50, status: 'open' });
-
-    // Get Polymarket markets
-    const pmMarkets = await this.pm.listMarkets({ limit: 50, closed: false });
-
-    // Simple keyword matching between platforms
-    for (const ke of kalshiEvents) {
-      for (const pm of pmMarkets) {
-        if (!pm.outcomePrices || !pm.question) continue;
-
-        // Check if titles share significant keywords
-        const kalshiWords = new Set(ke.title.toLowerCase().split(/\s+/).filter(w => w.length > 4));
-        const pmWords = new Set(pm.question.toLowerCase().split(/\s+/).filter(w => w.length > 4));
-        const overlap = [...kalshiWords].filter(w => pmWords.has(w));
-
-        if (overlap.length >= 2) {
-          // Found a potential match — compare prices
-          const pmPrices = JSON.parse(pm.outcomePrices) as string[];
-          const pmYes = parseFloat(pmPrices[0] ?? '0');
-
-          for (const km of ke.markets) {
-            const kalshiYes = parseFloat(km.yes_ask_dollars ?? '0');
-            if (kalshiYes === 0) continue;
-
-            const spread = Math.abs(pmYes - kalshiYes);
-            if (spread > 0.05) { // More than 5 point spread
-              signals.push({
-                type: 'cross_platform',
-                description: `"${pm.question}" vs Kalshi "${km.title}" — Polymarket: ${(pmYes * 100).toFixed(0)}% vs Kalshi: ${(kalshiYes * 100).toFixed(0)}%. Spread: ${(spread * 100).toFixed(0)} points.`,
-                spread_points: Math.round(spread * 100),
-                details: {
-                  polymarket: { id: pm.id, question: pm.question, yes_price: pmYes, clobTokenIds: pm.clobTokenIds },
-                  kalshi: { ticker: km.ticker, title: km.title, yes_price: kalshiYes },
-                  overlap_keywords: overlap,
-                },
-              });
-            }
-          }
-        }
-      }
-    }
-
-    return signals.sort((a, b) => b.spread_points - a.spread_points);
+    return rows.map((r: any) => ({
+      type: r.link_type === 'llm' ? 'correlated' : r.platform_a === r.platform_b ? 'same_question' : 'cross_platform',
+      market_a: r.market_a,
+      market_b: r.market_b,
+      platform_a: r.platform_a,
+      platform_b: r.platform_b,
+      price_a: r.price_a,
+      price_b: r.price_b,
+      spread_points: r.spread_points ?? 0,
+      similarity: r.similarity ?? 0,
+      link_type: r.link_type,
+    }));
   }
 
-  // Compare Polymarket crypto markets against actual crypto prices
-  async scanCryptoSpreads(): Promise<SpreadSignal[]> {
-    const signals: SpreadSignal[] = [];
-
-    // Search for crypto-related prediction markets
-    const markets = await this.pm.listMarkets({ limit: 50, closed: false });
-    const cryptoMarkets = markets.filter(m =>
-      m.question && /bitcoin|btc|ethereum|eth|crypto|solana|sol/i.test(m.question)
-    );
-
-    if (cryptoMarkets.length === 0) return signals;
-
-    // Get current crypto prices
-    const btcRes = await fetch(`${BINANCE}/ticker/24hr?symbol=BTCUSDT`);
-    const ethRes = await fetch(`${BINANCE}/ticker/24hr?symbol=ETHUSDT`);
-    const btcData = btcRes.ok ? await btcRes.json() as Record<string, string> : null;
-    const ethData = ethRes.ok ? await ethRes.json() as Record<string, string> : null;
-
-    const cryptoPrices = {
-      BTC: btcData ? parseFloat(btcData.lastPrice) : null,
-      BTC_change_24h: btcData ? parseFloat(btcData.priceChangePercent) : null,
-      ETH: ethData ? parseFloat(ethData.lastPrice) : null,
-      ETH_change_24h: ethData ? parseFloat(ethData.priceChangePercent) : null,
-    };
-
-    for (const m of cryptoMarkets) {
-      if (!m.outcomePrices) continue;
-      const prices = JSON.parse(m.outcomePrices) as string[];
-      const yesPrice = parseFloat(prices[0] ?? '0');
-
-      signals.push({
-        type: 'cross_market',
-        description: `${m.question} — Polymarket Yes: ${(yesPrice * 100).toFixed(0)}%. BTC: $${cryptoPrices.BTC?.toLocaleString() ?? '?'} (${cryptoPrices.BTC_change_24h?.toFixed(1) ?? '?'}% 24h). ETH: $${cryptoPrices.ETH?.toLocaleString() ?? '?'}.`,
-        spread_points: 0, // Agent needs to assess the spread
-        details: {
-          market: { id: m.id, question: m.question, yes_price: yesPrice, clobTokenIds: m.clobTokenIds },
-          crypto: cryptoPrices,
-        },
-      });
-    }
-
-    return signals;
+  // Get correlated instruments for a specific market
+  getLinks(platform: string, assetId: string): Array<{ platform: string; asset_id: string; title: string; price: number | null; link_type: string }> {
+    const row = this.db.prepare('SELECT id FROM market_index WHERE platform = ? AND asset_id = ?').get(platform, assetId) as { id: number } | undefined;
+    if (!row) return [];
+    return this.db.prepare(`
+      SELECT b.platform, b.asset_id, b.title, b.price, ml.link_type
+      FROM market_links ml JOIN market_index b ON b.id = ml.market_b_id
+      WHERE ml.market_a_id = ?
+      UNION
+      SELECT a.platform, a.asset_id, a.title, a.price, ml.link_type
+      FROM market_links ml JOIN market_index a ON a.id = ml.market_a_id
+      WHERE ml.market_b_id = ?
+    `).all(row.id, row.id) as any[];
   }
 
-  // Get forex data for geopolitical market context
-  async getForexSnapshot(): Promise<Record<string, number>> {
-    const res = await fetch(`${FRANKFURTER}/latest?base=USD&symbols=EUR,GBP,JPY,CNY,RUB,MXN,BRL`);
-    if (!res.ok) return {};
-    const d = await res.json() as { rates: Record<string, number> };
-    return d.rates ?? {};
+  // Index stats
+  stats(): { total_indexed: number; total_links: number; by_platform: Record<string, number> } {
+    const total = (this.db.prepare('SELECT COUNT(*) as c FROM market_index').get() as any).c;
+    const links = (this.db.prepare('SELECT COUNT(*) as c FROM market_links').get() as any).c;
+    const platforms = this.db.prepare('SELECT platform, COUNT(*) as c FROM market_index GROUP BY platform').all() as any[];
+    const byPlatform: Record<string, number> = {};
+    for (const p of platforms) byPlatform[p.platform] = p.c;
+    return { total_indexed: total, total_links: links, by_platform: byPlatform };
   }
 }
