@@ -254,6 +254,15 @@ export function recordTrade(
   );
 }
 
+export function getTradeById(
+  db: Database.Database,
+  tradeId: number
+): TradeHistoryRow | undefined {
+  return db.prepare(
+    `SELECT * FROM trade_history WHERE id = ?`
+  ).get(tradeId) as TradeHistoryRow | undefined;
+}
+
 export function getTradeHistory(
   db: Database.Database,
   agentId: string,

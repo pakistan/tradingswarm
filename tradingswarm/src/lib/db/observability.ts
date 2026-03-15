@@ -34,15 +34,28 @@ export function insertToolLog(
 
 export function getToolLog(
   db: Database.Database,
-  filters: { agent_id?: string; tool_name?: string; limit?: number }
+  filters: { agent_id?: string; tool_name?: string; limit?: number; after?: string }
 ): ToolLogRow[] {
   let sql = `SELECT * FROM tool_log WHERE 1=1`;
   const params: unknown[] = [];
   if (filters.agent_id) { sql += ` AND agent_id = ?`; params.push(filters.agent_id); }
   if (filters.tool_name) { sql += ` AND tool_name = ?`; params.push(filters.tool_name); }
+  if (filters.after) { sql += ` AND created_at >= ?`; params.push(filters.after); }
   sql += ` ORDER BY created_at DESC LIMIT ?`;
   params.push(filters.limit ?? 100);
   return db.prepare(sql).all(...params) as ToolLogRow[];
+}
+
+export function getToolLogAgents(db: Database.Database): string[] {
+  return (db.prepare(
+    `SELECT DISTINCT agent_id FROM tool_log ORDER BY agent_id`
+  ).all() as { agent_id: string }[]).map(r => r.agent_id);
+}
+
+export function getToolLogToolNames(db: Database.Database): string[] {
+  return (db.prepare(
+    `SELECT DISTINCT tool_name FROM tool_log ORDER BY tool_name`
+  ).all() as { tool_name: string }[]).map(r => r.tool_name);
 }
 
 // ---- Agent Memory ----
