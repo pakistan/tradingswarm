@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { StatusBadge } from './status-badge';
 import { ToggleSwitch } from './toggle-switch';
 import { AgentBadge } from './agent-badge';
@@ -21,94 +21,178 @@ export interface AgentCardData {
   pending_orders_count: number;
   memory_count: number;
   trade_history_count: number;
+  prompt_template: string | null;
+  mechanics_file: string | null;
+}
+
+export interface ConfigCardData {
+  config_id: number;
+  name: string;
+  description: string | null;
+  model_name: string;
+  latest_version: number;
+  active_tools: number;
+  agent_count: number;
+  running_agents: number;
+  updated_at: string;
 }
 
 interface AgentsClientProps {
   agents: AgentCardData[];
+  configs: ConfigCardData[];
 }
 
-export function AgentsClient({ agents }: AgentsClientProps) {
+export function AgentsClient({ agents, configs }: AgentsClientProps) {
+  const [pageTab, setPageTab] = useState<'live' | 'offline' | 'configs'>('live');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'state' | 'live'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'state' | 'prompt' | 'mechanics' | 'live'>('overview');
 
+  const liveAgents = agents.filter(a => a.status === 'running');
+  const offlineAgents = agents.filter(a => a.status !== 'running');
+  const displayedAgents = pageTab === 'live' ? liveAgents : pageTab === 'offline' ? offlineAgents : [];
   const selectedAgent = agents.find(a => a.agent_id === selectedAgentId) ?? null;
 
   return (
     <>
-      {/* Agent Cards Grid */}
-      {agents.length === 0 ? (
-        <div className="bg-white/70 border border-black/5 rounded-2xl backdrop-blur-xl p-16 text-center">
-          <div className="text-gray-300 text-5xl mb-4">&#9651;</div>
-          <p className="text-gray-400 font-medium">No agents yet</p>
-          <p className="text-xs text-gray-300 mt-1">Create your first agent to get started</p>
+      {/* Sub-tabs */}
+      <div className="flex gap-0.5 bg-black/[.03] rounded-2xl p-1 mb-6">
+        {([
+          { key: 'live' as const, label: `Live (${liveAgents.length})` },
+          { key: 'offline' as const, label: `Offline (${offlineAgents.length})` },
+          { key: 'configs' as const, label: `Configs (${configs.length})` },
+        ]).map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => { setPageTab(tab.key); setSelectedAgentId(null); }}
+            className={`px-5 py-2 rounded-xl text-sm font-medium transition-all ${
+              pageTab === tab.key
+                ? 'text-gray-900 bg-white shadow-sm font-semibold'
+                : 'text-gray-400 hover:text-gray-600'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Configs view */}
+      {pageTab === 'configs' && (
+        configs.length === 0 ? (
+          <div className="bg-white/70 border border-black/5 rounded-2xl backdrop-blur-xl p-12 text-center">
+            <p className="text-gray-400 font-medium">No configs yet</p>
+          </div>
+        ) : (
+          <div className="bg-white/70 border border-black/5 rounded-2xl backdrop-blur-xl overflow-hidden">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="text-[0.6rem] uppercase tracking-widest text-gray-400 font-semibold border-b border-black/5">
+                  <th className="py-2.5 px-5">Name</th>
+                  <th className="py-2.5 px-5">Version</th>
+                  <th className="py-2.5 px-5">Model</th>
+                  <th className="py-2.5 px-5 text-right">Tools</th>
+                  <th className="py-2.5 px-5 text-right">Agents</th>
+                  <th className="py-2.5 px-5 text-right">Running</th>
+                </tr>
+              </thead>
+              <tbody>
+                {configs.map(c => (
+                  <tr key={c.config_id} className="border-b border-black/5 last:border-0 hover:bg-black/[.02] cursor-pointer"
+                    onClick={() => window.location.href = `/configs/${c.config_id}`}
+                  >
+                    <td className="py-3 px-5">
+                      <span className="text-sm font-semibold text-gray-900">{c.name}</span>
+                      {c.description && <p className="text-xs text-gray-400 mt-0.5 truncate max-w-[300px]">{c.description}</p>}
+                    </td>
+                    <td className="py-3 px-5">
+                      <span className="text-xs font-mono text-primary bg-primary/10 px-2 py-0.5 rounded-full">v{c.latest_version}</span>
+                    </td>
+                    <td className="py-3 px-5">
+                      <span className="text-xs font-mono text-gray-500">{c.model_name || '-'}</span>
+                    </td>
+                    <td className="py-3 px-5 text-right">
+                      <span className="text-sm text-gray-900">{c.active_tools}</span>
+                    </td>
+                    <td className="py-3 px-5 text-right">
+                      <span className="text-sm text-gray-900">{c.agent_count}</span>
+                    </td>
+                    <td className="py-3 px-5 text-right">
+                      <span className={`text-sm font-semibold ${c.running_agents > 0 ? 'text-emerald-600' : 'text-gray-400'}`}>{c.running_agents}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
+
+      {/* Agent Table */}
+      {pageTab !== 'configs' && (<>
+      {displayedAgents.length === 0 ? (
+        <div className="bg-white/70 border border-black/5 rounded-2xl backdrop-blur-xl p-12 text-center">
+          <p className="text-gray-400 font-medium">No {pageTab === 'live' ? 'live' : 'offline'} agents</p>
         </div>
       ) : (
-        <div className="grid grid-cols-3 gap-4 mb-6">
-          {agents.map(agent => {
-            const isSelected = agent.agent_id === selectedAgentId;
-            const pnlColor = agent.pnl >= 0 ? 'text-emerald-600' : 'text-rose-600';
-
-            return (
-              <button
-                key={agent.agent_id}
-                onClick={() => setSelectedAgentId(isSelected ? null : agent.agent_id)}
-                className={`bg-white/70 border rounded-2xl backdrop-blur-xl p-5 text-left transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/5 ${
-                  isSelected ? 'border-primary/30 ring-2 ring-primary/10' : 'border-black/5'
-                }`}
-              >
-                {/* Header */}
-                <div className="flex items-start justify-between mb-3">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
+        <div className="bg-white/70 border border-black/5 rounded-2xl backdrop-blur-xl overflow-hidden mb-6">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="text-[0.6rem] uppercase tracking-widest text-gray-400 font-semibold border-b border-black/5">
+                <th className="py-2.5 px-5">Agent</th>
+                <th className="py-2.5 px-5">Status</th>
+                <th className="py-2.5 px-5">Model</th>
+                <th className="py-2.5 px-5">Config</th>
+                <th className="py-2.5 px-5 text-right">P&L</th>
+                <th className="py-2.5 px-5 text-right">Trades</th>
+                <th className="py-2.5 px-5 text-right">Win Rate</th>
+                <th className="py-2.5 px-5 text-right">Cash</th>
+              </tr>
+            </thead>
+            <tbody>
+              {displayedAgents.map(agent => {
+                const isSelected = agent.agent_id === selectedAgentId;
+                return (
+                  <tr
+                    key={agent.agent_id}
+                    onClick={() => setSelectedAgentId(isSelected ? null : agent.agent_id)}
+                    className={`border-b border-black/5 last:border-0 cursor-pointer transition-colors ${
+                      isSelected ? 'bg-primary/5' : 'hover:bg-black/[.02]'
+                    }`}
+                  >
+                    <td className="py-3 px-5">
                       <AgentBadge name={agent.display_name ?? agent.agent_id} />
-                    </div>
-                    {agent.model_name && (
-                      <span className="text-[0.6rem] text-gray-400 font-mono">{agent.model_name}</span>
-                    )}
-                  </div>
-                  <StatusBadge status={agent.status} />
-                </div>
-
-                {/* Stats */}
-                <div className="grid grid-cols-3 gap-3 mb-3">
-                  <div>
-                    <div className="text-[0.6rem] uppercase tracking-widest text-gray-400 font-semibold">P&L</div>
-                    <div className={`font-mono font-bold text-sm ${pnlColor}`}>
-                      {agent.pnl >= 0 ? '+' : ''}{agent.pnl.toFixed(2)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[0.6rem] uppercase tracking-widest text-gray-400 font-semibold">Trades</div>
-                    <div className="font-mono font-bold text-sm text-gray-900">{agent.num_trades}</div>
-                  </div>
-                  <div>
-                    <div className="text-[0.6rem] uppercase tracking-widest text-gray-400 font-semibold">Win Rate</div>
-                    <div className="font-mono font-bold text-sm text-gray-900">
-                      {agent.num_trades > 0 ? `${agent.win_rate.toFixed(0)}%` : '-'}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Tags */}
-                <div className="flex items-center justify-between">
-                  <div className="flex gap-1.5">
-                    {agent.config_name && (
-                      <span className="text-[0.6rem] font-medium px-2 py-0.5 rounded-lg bg-gray-100 text-gray-500">
-                        {agent.config_name}
-                        {agent.config_version ? ` v${agent.config_version}` : ''}
+                    </td>
+                    <td className="py-3 px-5">
+                      <StatusBadge status={agent.status} />
+                    </td>
+                    <td className="py-3 px-5">
+                      <span className="text-xs font-mono text-gray-500">{agent.model_name ?? '-'}</span>
+                    </td>
+                    <td className="py-3 px-5">
+                      <span className="text-xs text-gray-500">
+                        {agent.config_name ? `${agent.config_name} v${agent.config_version ?? '?'}` : '-'}
                       </span>
-                    )}
-                    {agent.schedule_interval && (
-                      <span className="text-[0.6rem] font-medium px-2 py-0.5 rounded-lg bg-gray-100 text-gray-500">
-                        {agent.schedule_interval}
+                    </td>
+                    <td className="py-3 px-5 text-right">
+                      <span className={`font-mono font-bold text-sm ${agent.pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        {agent.pnl >= 0 ? '+' : ''}{agent.pnl.toFixed(2)}
                       </span>
-                    )}
-                  </div>
-                  <ToggleSwitch on={agent.status === 'running'} />
-                </div>
-              </button>
-            );
-          })}
+                    </td>
+                    <td className="py-3 px-5 text-right">
+                      <span className="font-mono text-sm text-gray-900">{agent.num_trades}</span>
+                    </td>
+                    <td className="py-3 px-5 text-right">
+                      <span className="font-mono text-sm text-gray-900">
+                        {agent.num_trades > 0 ? `${agent.win_rate.toFixed(0)}%` : '-'}
+                      </span>
+                    </td>
+                    <td className="py-3 px-5 text-right">
+                      <span className="font-mono text-sm text-gray-900">${agent.current_cash.toFixed(0)}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
 
@@ -117,7 +201,7 @@ export function AgentsClient({ agents }: AgentsClientProps) {
         <div className="bg-white/70 border border-black/5 rounded-2xl backdrop-blur-xl overflow-hidden">
           {/* Tabs */}
           <div className="flex items-center gap-0.5 px-5 pt-4 pb-0 border-b border-black/5">
-            {(['overview', 'state', 'live'] as const).map(tab => (
+            {(['overview', 'state', 'prompt', 'mechanics', 'live'] as const).map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -127,7 +211,7 @@ export function AgentsClient({ agents }: AgentsClientProps) {
                     : 'text-gray-400 hover:text-gray-600'
                 }`}
               >
-                {tab === 'live' ? 'Live View' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                {{ overview: 'Overview', state: 'State', prompt: 'Prompt', mechanics: 'Mechanics', live: 'Live View' }[tab]}
               </button>
             ))}
           </div>
@@ -140,16 +224,23 @@ export function AgentsClient({ agents }: AgentsClientProps) {
             {activeTab === 'state' && (
               <StateTab agent={selectedAgent} />
             )}
+            {activeTab === 'prompt' && (
+              <pre className="bg-black/[.03] rounded-xl p-4 text-xs text-gray-700 font-mono whitespace-pre-wrap overflow-y-auto border border-black/5">
+                {selectedAgent.prompt_template ?? 'No prompt template configured'}
+              </pre>
+            )}
+            {activeTab === 'mechanics' && (
+              <pre className="bg-black/[.03] rounded-xl p-4 text-xs text-gray-700 font-mono whitespace-pre-wrap overflow-y-auto border border-black/5">
+                {selectedAgent.mechanics_file ?? 'No mechanics file configured'}
+              </pre>
+            )}
             {activeTab === 'live' && (
-              <div className="text-center py-12">
-                <div className="text-gray-300 text-4xl mb-3">&#9679;</div>
-                <p className="text-sm text-gray-400 font-medium">Live View</p>
-                <p className="text-xs text-gray-300 mt-1">Real-time agent output streaming will be available soon</p>
-              </div>
+              <LiveTab agentId={selectedAgent.agent_id} />
             )}
           </div>
         </div>
       )}
+    </>)}
     </>
   );
 }
@@ -196,6 +287,7 @@ function OverviewTab({ agent }: { agent: AgentCardData }) {
           </div>
         </div>
       </div>
+
     </div>
   );
 }
@@ -249,6 +341,116 @@ function StateTab({ agent }: { agent: AgentCardData }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ---------- Live View ----------
+
+interface LiveEvent {
+  id: string;
+  type: string;
+  content: string;
+  time: string;
+}
+
+const EVENT_COLORS: Record<string, string> = {
+  thinking: 'border-l-purple-400',
+  tool_call: 'border-l-blue-400',
+  tool_result: 'border-l-emerald-400',
+  error: 'border-l-red-400',
+  loop_start: 'border-l-gray-300',
+  loop_end: 'border-l-gray-300',
+};
+
+const EVENT_LABELS: Record<string, string> = {
+  thinking: 'Thinking',
+  tool_call: 'Tool Call',
+  tool_result: 'Tool Result',
+  error: 'Error',
+  loop_start: 'Cycle Start',
+  loop_end: 'Cycle End',
+};
+
+function formatEventContent(type: string, data: Record<string, unknown> | null): string {
+  if (!data) return '';
+  if (type === 'thinking') return String(data.content ?? '');
+  if (type === 'tool_call') return `${data.tool_name}(${JSON.stringify(data.arguments ?? {})})`;
+  if (type === 'tool_result') {
+    const result = String(data.result ?? '');
+    return `${data.tool_name} → ${result.length > 300 ? result.slice(0, 300) + '...' : result}`;
+  }
+  if (type === 'error') return String(data.error ?? data.message ?? JSON.stringify(data));
+  if (type === 'loop_start') return data.message ? String(data.message) : 'New cycle';
+  if (type === 'loop_end') return 'Cycle complete';
+  return JSON.stringify(data);
+}
+
+function LiveTab({ agentId }: { agentId: string }) {
+  const [events, setEvents] = useState<LiveEvent[]>([]);
+  const [connected, setConnected] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const es = new EventSource(`/api/events?agent_id=${agentId}`);
+
+    es.addEventListener('connected', () => setConnected(true));
+    es.onerror = () => setConnected(false);
+
+    const handle = (eventType: string) => (e: MessageEvent) => {
+      try {
+        const parsed = JSON.parse(e.data);
+        const event: LiveEvent = {
+          id: e.lastEventId || String(Date.now()),
+          type: eventType,
+          content: formatEventContent(eventType, parsed.data),
+          time: parsed.created_at ?? new Date().toISOString(),
+        };
+        setEvents(prev => [...prev.slice(-200), event]);
+      } catch { /* skip */ }
+    };
+
+    for (const type of ['thinking', 'tool_call', 'tool_result', 'error', 'loop_start', 'loop_end']) {
+      es.addEventListener(type, handle(type));
+    }
+
+    return () => es.close();
+  }, [agentId]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [events]);
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        <span className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-500 animate-pulse' : 'bg-gray-300'}`} />
+        <span className="text-xs text-gray-400">{connected ? 'Connected' : 'Connecting...'}</span>
+        <span className="text-xs text-gray-300 ml-auto">{events.length} events</span>
+      </div>
+      <div className="bg-black/[.02] rounded-xl p-4 max-h-[500px] overflow-y-auto font-mono text-xs space-y-1">
+        {events.length === 0 && (
+          <p className="text-gray-400 text-center py-8">Waiting for agent events...</p>
+        )}
+        {events.map(event => (
+          <div key={event.id} className={`border-l-2 ${EVENT_COLORS[event.type] ?? 'border-l-gray-300'} pl-3 py-1`}>
+            <div className="flex items-center gap-2 mb-0.5">
+              <span className="text-[0.6rem] font-bold uppercase tracking-wider text-gray-400">
+                {EVENT_LABELS[event.type] ?? event.type}
+              </span>
+              <span className="text-[0.55rem] text-gray-300">
+                {event.time.split(' ')[1] ?? event.time}
+              </span>
+            </div>
+            <pre className={`whitespace-pre-wrap break-words text-xs ${
+              event.type === 'error' ? 'text-red-500' :
+              event.type === 'thinking' ? 'text-gray-700' :
+              'text-gray-500'
+            }`}>{event.content}</pre>
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
     </div>
   );
 }

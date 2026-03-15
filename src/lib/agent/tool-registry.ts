@@ -7,6 +7,9 @@ import * as channels from '@/lib/db/channels';
 import * as snapshots from '@/lib/db/snapshots';
 import * as agents from '@/lib/db/agents';
 import { getMemory, upsertMemory } from '@/lib/db/observability';
+import { PolymarketAPI } from '@/lib/platforms/polymarket/api';
+import { simulateBuy, simulateSell } from '@/lib/trading/order-engine';
+import type { GammaMarket } from '@/lib/platforms/polymarket/types';
 
 // ---- Types ----
 
@@ -167,6 +170,86 @@ const PM_TOOL_DEFS: Record<string, ToolDef> = {
       properties: {},
     },
   },
+  pm_orderbook: {
+    name: 'pm_orderbook',
+    description: 'Get the order book for an outcome. Shows bids, asks, spread, mid price, and depth. Check this BEFORE trading to understand liquidity.',
+    parameters: {
+      type: 'object',
+      properties: {
+        outcome_id: { type: 'string', description: 'Outcome/token ID' },
+      },
+      required: ['outcome_id'],
+    },
+  },
+  pm_price_history: {
+    name: 'pm_price_history',
+    description: 'Get price history for an outcome over time. Returns timestamped price points.',
+    parameters: {
+      type: 'object',
+      properties: {
+        outcome_id: { type: 'string', description: 'Outcome/token ID' },
+        interval: { type: 'string', description: 'Time interval: 1m, 5m, 1h, 1d (default 1h)' },
+      },
+      required: ['outcome_id'],
+    },
+  },
+  pm_search: {
+    name: 'pm_search',
+    description: 'Search for prediction markets by keyword. Returns matching markets, events, and profiles.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query (e.g. "crypto regulation", "NBA finals")' },
+        limit: { type: 'number', description: 'Max results (default 10)' },
+      },
+      required: ['query'],
+    },
+  },
+};
+
+const WORKSPACE_TOOL_DEFS: Record<string, ToolDef> = {
+  notepad_read: {
+    name: 'notepad_read',
+    description: 'Read a file from your workspace. Use for notes, analysis, code, or any scratch work.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path relative to your workspace (e.g. "notes.md", "analysis/model.py")' },
+      },
+      required: ['path'],
+    },
+  },
+  notepad_write: {
+    name: 'notepad_write',
+    description: 'Write a file to your workspace. Creates directories as needed. Use for notes, calculations, code, research logs.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path relative to your workspace' },
+        content: { type: 'string', description: 'File content to write' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  notepad_list: {
+    name: 'notepad_list',
+    description: 'List all files in your workspace.',
+    parameters: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  run_code: {
+    name: 'run_code',
+    description: 'Execute a Python or Node.js script from your workspace. Use for calculations, data analysis, or any computation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Script path relative to your workspace (e.g. "calc.py", "analysis.js")' },
+      },
+      required: ['path'],
+    },
+  },
 };
 
 const CHANNEL_TOOL_DEFS: Record<string, ToolDef> = {
@@ -203,16 +286,19 @@ const CHANNEL_TOOL_DEFS: Record<string, ToolDef> = {
       required: ['channel_id', 'content'],
     },
   },
-  hub_create_channel: {
-    name: 'hub_create_channel',
-    description: 'Create a new coordination channel.',
+};
+
+const WEB_TOOL_DEFS: Record<string, ToolDef> = {
+  web_search: {
+    name: 'web_search',
+    description: 'Search the web for information. Returns titles, URLs, and snippets from top results.',
     parameters: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Channel name' },
-        description: { type: 'string', description: 'Channel description' },
+        query: { type: 'string', description: 'Search query' },
+        count: { type: 'number', description: 'Number of results (default 5, max 20)' },
       },
-      required: ['name'],
+      required: ['query'],
     },
   },
 };
@@ -284,28 +370,59 @@ function buildPmHandlers(
   db: Database.Database,
   agentId: string,
 ): Record<string, ToolHandler> {
+  const api = new PolymarketAPI();
+
   return {
     pm_markets: async (args) => {
-      // We return locally cached markets; in a real implementation this would call the API
-      const rows = db.prepare(
-        `SELECT m.*, GROUP_CONCAT(o.outcome_id || ':' || o.name || ':' || COALESCE(o.current_price, 0)) as outcomes_str
-         FROM markets m LEFT JOIN outcomes o ON o.market_id = m.market_id
-         WHERE m.active = 1
-         GROUP BY m.market_id
-         ORDER BY m.volume DESC
-         LIMIT ?`
-      ).all(Number(args.limit) || 20);
-      return JSON.stringify(rows);
+      const limit = Number(args.limit) || 20;
+      const markets = await api.listMarkets({ limit, closed: false });
+      // Cache to DB
+      for (const m of markets) {
+        try {
+          trades.upsertMarket(db, { market_id: m.id, platform: 'polymarket', question: m.question, category: m.category, description: m.description, resolution_source: m.resolutionSource, end_date: m.endDate, active: m.active ? 1 : 0, volume: m.volumeNum ?? 0, raw_json: null });
+          if (m.outcomes && m.clobTokenIds && m.outcomePrices) {
+            const names = JSON.parse(m.outcomes) as string[];
+            const tokenIds = JSON.parse(m.clobTokenIds) as string[];
+            const prices = JSON.parse(m.outcomePrices) as string[];
+            for (let i = 0; i < names.length; i++) {
+              if (tokenIds[i]) trades.upsertOutcome(db, { outcome_id: tokenIds[i], market_id: m.id, name: names[i], current_price: parseFloat(prices[i] ?? '0') });
+            }
+          }
+        } catch { /* skip */ }
+      }
+      return JSON.stringify(markets.map(m => ({ id: m.id, question: m.question, outcomes: m.outcomes, outcomePrices: m.outcomePrices, clobTokenIds: m.clobTokenIds, volume: m.volumeNum, endDate: m.endDate })));
     },
     pm_market_detail: async (args) => {
-      const market = trades.getMarket(db, String(args.market_id));
-      if (!market) return JSON.stringify({ error: 'Market not found' });
-      const outcomes = db.prepare(`SELECT * FROM outcomes WHERE market_id = ?`).all(market.market_id);
-      return JSON.stringify({ ...market, outcomes });
+      const detail = await api.getMarketDetail(String(args.market_id));
+      return JSON.stringify({
+        id: detail.id,
+        question: detail.question,
+        description: detail.description,
+        category: detail.category,
+        outcomes: detail.outcomes,
+        outcomePrices: detail.outcomePrices,
+        clobTokenIds: detail.clobTokenIds,
+        volume: detail.volumeNum,
+        endDate: detail.endDate,
+        spread: detail.spread,
+        bestBid: detail.bestBid,
+        bestAsk: detail.bestAsk,
+        active: detail.active,
+        closed: detail.closed,
+        resolutionSource: detail.resolutionSource,
+      });
     },
     pm_positions: async () => {
       const positions = trades.getPositions(db, agentId);
-      return JSON.stringify(positions);
+      // Update current prices from API for unrealized P&L
+      for (const pos of positions) {
+        try {
+          const mid = await api.getMidpointPrice(pos.outcome_id);
+          trades.updatePositionPrice(db, agentId, pos.outcome_id, mid);
+        } catch { /* skip price update failures */ }
+      }
+      const updated = trades.getPositions(db, agentId);
+      return JSON.stringify(updated);
     },
     pm_balance: async () => {
       const agent = agents.getAgent(db, agentId);
@@ -323,30 +440,174 @@ function buildPmHandlers(
       });
     },
     pm_buy: async (args) => {
-      // Record as pending market order — the actual fill simulation happens externally
+      const outcomeId = String(args.outcome_id);
+      const amount = Number(args.amount);
+      const agentContext = args.agent_context ? String(args.agent_context) : undefined;
+
+      // Check agent has enough cash
+      const agent = agents.getAgent(db, agentId);
+      if (!agent) return JSON.stringify({ error: 'Agent not found' });
+      const maxOrderSize = agent.initial_balance * 0.05; // 5% of bankroll
+      if (amount > maxOrderSize) {
+        return JSON.stringify({ error: `Order too large. Max order size is $${maxOrderSize.toFixed(0)} (5% of bankroll). Requested: $${amount}` });
+      }
+      if (agent.current_cash < amount) {
+        return JSON.stringify({ error: `Insufficient cash. Have $${agent.current_cash.toFixed(2)}, need $${amount}` });
+      }
+
+      // Fetch live order book and simulate fill
+      const orderBook = await api.getOrderBook(outcomeId);
+      if (orderBook.asks.length === 0) {
+        return JSON.stringify({ error: 'No asks in order book — cannot buy' });
+      }
+      const fill = simulateBuy(orderBook.asks, { amount });
+      if (fill.filled_shares === 0) {
+        return JSON.stringify({ error: 'Could not fill any shares at current prices' });
+      }
+
+      // Reject if slippage exceeds 5% of best ask price
+      const bestAsk = orderBook.asks[0].price;
+      const slippagePct = fill.slippage / bestAsk;
+      if (slippagePct > 0.05) {
+        return JSON.stringify({
+          error: `Order rejected: slippage too high (${(slippagePct * 100).toFixed(1)}%). Best ask: $${bestAsk.toFixed(3)}, avg fill: $${fill.avg_fill_price.toFixed(3)}. Reduce order size or find a deeper book.`,
+          best_ask: bestAsk,
+          avg_fill_price: fill.avg_fill_price,
+          slippage: fill.slippage,
+          slippage_pct: slippagePct,
+          levels_consumed: fill.levels_consumed,
+        });
+      }
+
+      // Record snapshot if context provided
+      if (agentContext) {
+        snapshots.insertSnapshot(db, agentId, outcomeId, agentContext,
+          JSON.stringify({ mid_price: orderBook.mid_price, spread: orderBook.spread, best_ask: orderBook.asks[0]?.price }));
+      }
+
+      // Deduct cash
+      agents.updateAgentCash(db, agentId, -fill.filled_amount);
+
+      // Record order as filled
       const orderId = trades.insertOrder(db, {
         agent_id: agentId,
-        outcome_id: String(args.outcome_id),
+        outcome_id: outcomeId,
         side: 'buy',
         order_type: 'market',
-        requested_amount: Number(args.amount),
-        status: 'pending',
+        requested_amount: amount,
+        filled_amount: fill.filled_amount,
+        filled_shares: fill.filled_shares,
+        avg_fill_price: fill.avg_fill_price,
+        status: 'filled',
       });
-      return JSON.stringify({ order_id: orderId, status: 'pending', message: 'Buy order submitted' });
+
+      // Update position — merge with existing if any
+      const existingPos = trades.getPosition(db, agentId, outcomeId);
+      if (existingPos && existingPos.shares > 0) {
+        const totalShares = existingPos.shares + fill.filled_shares;
+        const totalCost = (existingPos.shares * existingPos.avg_entry_price) + fill.filled_amount;
+        trades.upsertPosition(db, agentId, outcomeId, totalShares, totalCost / totalShares);
+      } else {
+        trades.upsertPosition(db, agentId, outcomeId, fill.filled_shares, fill.avg_fill_price);
+      }
+
+      return JSON.stringify({
+        order_id: orderId,
+        status: 'filled',
+        filled_shares: fill.filled_shares,
+        filled_amount: fill.filled_amount,
+        avg_fill_price: fill.avg_fill_price,
+        slippage: fill.slippage,
+        levels_consumed: fill.levels_consumed,
+        remaining_cash: agent.current_cash - fill.filled_amount,
+      });
     },
     pm_sell: async (args) => {
-      const position = trades.getPosition(db, agentId, String(args.outcome_id));
-      if (!position) return JSON.stringify({ error: 'No position found for this outcome' });
-      const sharesToSell = Math.min(Number(args.shares), position.shares);
+      const outcomeId = String(args.outcome_id);
+      const requestedShares = Number(args.shares);
+      const agentContext = args.agent_context ? String(args.agent_context) : undefined;
+
+      const position = trades.getPosition(db, agentId, outcomeId);
+      if (!position || position.shares <= 0) {
+        return JSON.stringify({ error: 'No position found for this outcome' });
+      }
+      const sharesToSell = Math.min(requestedShares, position.shares);
+
+      // Fetch live order book and simulate fill
+      const orderBook = await api.getOrderBook(outcomeId);
+      if (orderBook.bids.length === 0) {
+        return JSON.stringify({ error: 'No bids in order book — cannot sell' });
+      }
+      const fill = simulateSell(orderBook.bids, sharesToSell);
+      if (fill.filled_shares === 0) {
+        return JSON.stringify({ error: 'Could not fill any shares at current prices' });
+      }
+
+      // Record snapshot if context provided
+      if (agentContext) {
+        snapshots.insertSnapshot(db, agentId, outcomeId, agentContext,
+          JSON.stringify({ mid_price: orderBook.mid_price, spread: orderBook.spread, best_bid: orderBook.bids[0]?.price }));
+      }
+
+      // Add proceeds to cash
+      agents.updateAgentCash(db, agentId, fill.filled_amount);
+
+      // Record order as filled
       const orderId = trades.insertOrder(db, {
         agent_id: agentId,
-        outcome_id: String(args.outcome_id),
+        outcome_id: outcomeId,
         side: 'sell',
         order_type: 'market',
         requested_shares: sharesToSell,
-        status: 'pending',
+        filled_amount: fill.filled_amount,
+        filled_shares: fill.filled_shares,
+        avg_fill_price: fill.avg_fill_price,
+        status: 'filled',
       });
-      return JSON.stringify({ order_id: orderId, status: 'pending', message: 'Sell order submitted' });
+
+      // Calculate P&L
+      const pnl = (fill.avg_fill_price - position.avg_entry_price) * fill.filled_shares;
+
+      // Update or close position
+      const remainingShares = position.shares - fill.filled_shares;
+      trades.upsertPosition(db, agentId, outcomeId, remainingShares, position.avg_entry_price);
+
+      // Record trade in history
+      const outcome = trades.getOutcomeById(db, outcomeId);
+      const market = outcome ? trades.getMarketByOutcomeId(db, outcomeId) : undefined;
+      trades.recordTrade(db, {
+        agent_id: agentId,
+        outcome_id: outcomeId,
+        market_question: market?.question ?? 'Unknown',
+        outcome_name: outcome?.name ?? 'Unknown',
+        entry_price: position.avg_entry_price,
+        exit_price: fill.avg_fill_price,
+        shares: fill.filled_shares,
+        realized_pnl: pnl,
+        reason: 'sold',
+        snapshot_id: null,
+        opened_at: position.updated_at ?? new Date().toISOString(),
+      });
+
+      // Auto-post to trade-results channel
+      try {
+        const tradeResultsChannel = db.prepare("SELECT channel_id FROM channels WHERE name = 'trade-results'").get() as { channel_id: number } | undefined;
+        if (tradeResultsChannel) {
+          const pnlSign = pnl >= 0 ? '+' : '';
+          const post = `**Trade Closed** | ${market?.question ?? 'Unknown'} (${outcome?.name ?? '?'})\nEntry: $${position.avg_entry_price.toFixed(3)} → Exit: $${fill.avg_fill_price.toFixed(3)} | ${fill.filled_shares.toFixed(1)} shares | P&L: ${pnlSign}$${pnl.toFixed(2)}`;
+          channels.createPost(db, tradeResultsChannel.channel_id, agentId, post);
+        }
+      } catch { /* don't fail the trade if posting fails */ }
+
+      return JSON.stringify({
+        order_id: orderId,
+        status: 'filled',
+        filled_shares: fill.filled_shares,
+        filled_amount: fill.filled_amount,
+        avg_fill_price: fill.avg_fill_price,
+        slippage: fill.slippage,
+        pnl,
+      });
     },
     pm_orders: async () => {
       const pending = trades.getPendingOrders(db, agentId);
@@ -368,6 +629,86 @@ function buildPmHandlers(
     pm_leaderboard: async () => {
       const board = trades.getLeaderboard(db);
       return JSON.stringify(board);
+    },
+    pm_orderbook: async (args) => {
+      const orderBook = await api.getOrderBook(String(args.outcome_id));
+      return JSON.stringify({
+        mid_price: orderBook.mid_price,
+        spread: orderBook.spread,
+        best_bid: orderBook.bids[0]?.price ?? null,
+        best_ask: orderBook.asks[0]?.price ?? null,
+        bid_depth: orderBook.bids.slice(0, 10).map(l => ({ price: l.price, size: l.size })),
+        ask_depth: orderBook.asks.slice(0, 10).map(l => ({ price: l.price, size: l.size })),
+        total_bid_liquidity: orderBook.bids.reduce((s, l) => s + l.price * l.size, 0),
+        total_ask_liquidity: orderBook.asks.reduce((s, l) => s + l.price * l.size, 0),
+      });
+    },
+    pm_price_history: async (args) => {
+      const history = await api.getPriceHistory(String(args.outcome_id), {
+        interval: String(args.interval || '1h'),
+      });
+      return JSON.stringify(history);
+    },
+    pm_search: async (args) => {
+      const results = await api.searchMarkets(String(args.query), Number(args.limit) || 10);
+      return JSON.stringify(results);
+    },
+  };
+}
+
+function buildWorkspaceHandlers(agentId: string): Record<string, ToolHandler> {
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const { execSync } = require('child_process') as typeof import('child_process');
+
+  const workspaceDir = path.join(process.cwd(), 'data', 'workspaces', agentId);
+  fs.mkdirSync(workspaceDir, { recursive: true });
+
+  const safePath = (p: string) => {
+    const resolved = path.resolve(workspaceDir, p);
+    if (!resolved.startsWith(workspaceDir)) throw new Error('Path outside workspace');
+    return resolved;
+  };
+
+  return {
+    notepad_read: async (args) => {
+      const filePath = safePath(String(args.path));
+      if (!fs.existsSync(filePath)) return JSON.stringify({ error: 'File not found' });
+      return fs.readFileSync(filePath, 'utf-8');
+    },
+    notepad_write: async (args) => {
+      const filePath = safePath(String(args.path));
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, String(args.content));
+      return JSON.stringify({ ok: true, path: args.path });
+    },
+    notepad_list: async () => {
+      const files: string[] = [];
+      const walk = (dir: string) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else files.push(path.relative(workspaceDir, full));
+        }
+      };
+      walk(workspaceDir);
+      return JSON.stringify(files);
+    },
+    run_code: async (args) => {
+      const filePath = safePath(String(args.path));
+      if (!fs.existsSync(filePath)) return JSON.stringify({ error: 'File not found' });
+      const ext = path.extname(filePath);
+      let cmd: string;
+      if (ext === '.py') cmd = `python3 "${filePath}"`;
+      else if (ext === '.js') cmd = `node "${filePath}"`;
+      else return JSON.stringify({ error: `Unsupported file type: ${ext}. Use .py or .js` });
+      try {
+        const output = execSync(cmd, { cwd: workspaceDir, timeout: 30000, encoding: 'utf-8' });
+        return output || '(no output)';
+      } catch (err: unknown) {
+        const e = err as { stderr?: string; message?: string };
+        return JSON.stringify({ error: e.stderr || e.message || 'Execution failed' });
+      }
     },
   };
 }
@@ -393,15 +734,6 @@ function buildChannelHandlers(
         args.parent_id ? Number(args.parent_id) : undefined,
       );
       return JSON.stringify(post);
-    },
-    hub_create_channel: async (args) => {
-      const channel = channels.createChannel(
-        db,
-        String(args.name),
-        args.description ? String(args.description) : undefined,
-        agentId,
-      );
-      return JSON.stringify(channel);
     },
   };
 }
@@ -440,7 +772,33 @@ function buildMemoryHandlers(
   };
 }
 
+function buildWebSearchHandlers(apiKey: string): Record<string, ToolHandler> {
+  return {
+    web_search: async (args) => {
+      if (!apiKey) return JSON.stringify({ error: 'Web Search API key not configured. Set it in Admin > Tools > Web Search.' });
+      const query = String(args.query);
+      const count = Math.min(Number(args.count) || 5, 20);
+      const url = new URL('https://api.search.brave.com/res/v1/web/search');
+      url.searchParams.set('q', query);
+      url.searchParams.set('count', String(count));
+      const res = await fetch(url.toString(), {
+        headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': apiKey },
+      });
+      if (!res.ok) throw new Error(`Brave Search API error ${res.status}`);
+      const data = await res.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } };
+      const results = (data.web?.results ?? []).map(r => ({ title: r.title, url: r.url, snippet: r.description }));
+      return JSON.stringify(results);
+    },
+  };
+}
+
 // ---- Build Registry ----
+
+function getToolConfig(db: Database.Database, toolName: string): Record<string, string> {
+  const row = db.prepare('SELECT config_json FROM tools WHERE name = ?').get(toolName) as { config_json: string | null } | undefined;
+  if (!row?.config_json) return {};
+  try { return JSON.parse(row.config_json); } catch { return {}; }
+}
 
 export function buildToolRegistry(
   db: Database.Database,
@@ -486,6 +844,21 @@ export function buildToolRegistry(
   for (const [name, handler] of Object.entries(memoryHandlers)) {
     if (MEMORY_TOOL_DEFS[name]) {
       allHandlers[name] = { handler, def: MEMORY_TOOL_DEFS[name], platform: 'agent' };
+    }
+  }
+
+  const webConfig = getToolConfig(db, 'Web Search');
+  const webHandlers = buildWebSearchHandlers(webConfig.api_key ?? '');
+  for (const [name, handler] of Object.entries(webHandlers)) {
+    if (WEB_TOOL_DEFS[name]) {
+      allHandlers[name] = { handler, def: WEB_TOOL_DEFS[name], platform: 'web' };
+    }
+  }
+
+  const workspaceHandlers = buildWorkspaceHandlers(agentId);
+  for (const [name, handler] of Object.entries(workspaceHandlers)) {
+    if (WORKSPACE_TOOL_DEFS[name]) {
+      allHandlers[name] = { handler, def: WORKSPACE_TOOL_DEFS[name], platform: 'workspace' };
     }
   }
 

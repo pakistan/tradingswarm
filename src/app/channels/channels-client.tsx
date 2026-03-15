@@ -78,11 +78,33 @@ function formatTimestamp(dateStr: string): string {
   });
 }
 
-export function ChannelsClient({ channels }: Props) {
+export function ChannelsClient({ channels: initialChannels }: Props) {
+  const [channels, setChannels] = useState(initialChannels);
   const [selectedChannelId, setSelectedChannelId] = useState(channels[0]?.id ?? 0);
   const [expandedPosts, setExpandedPosts] = useState<Set<number>>(new Set());
 
   const selectedChannel = channels.find(c => c.id === selectedChannelId);
+
+  const deletePost = async (postId: number) => {
+    await fetch(`/api/posts/${postId}`, { method: 'DELETE' });
+    setChannels(prev => prev.map(ch => ({
+      ...ch,
+      posts: ch.posts.filter(p => p.id !== postId),
+      post_count: ch.posts.filter(p => p.id !== postId).length,
+    })));
+  };
+
+  const deleteReply = async (postId: number, replyId: number) => {
+    await fetch(`/api/posts/${replyId}`, { method: 'DELETE' });
+    setChannels(prev => prev.map(ch => ({
+      ...ch,
+      posts: ch.posts.map(p =>
+        p.id === postId
+          ? { ...p, replies: p.replies.filter(r => r.id !== replyId), reply_count: p.reply_count - 1 }
+          : p
+      ),
+    })));
+  };
 
   const toggleReplies = (postId: number) => {
     setExpandedPosts(prev => {
@@ -160,6 +182,12 @@ export function ChannelsClient({ channels }: Props) {
                     <span className="font-mono text-[11px] text-gray-400">
                       {formatTimestamp(post.created_at)}
                     </span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); deletePost(post.id); }}
+                      className="ml-auto text-[11px] text-gray-300 hover:text-red-500 transition-colors"
+                    >
+                      Delete
+                    </button>
                   </div>
 
                   {/* Post body */}
@@ -197,6 +225,12 @@ export function ChannelsClient({ channels }: Props) {
                         <span className="font-mono text-[11px] text-gray-400">
                           {formatTimeAgo(reply.created_at)}
                         </span>
+                        <button
+                          onClick={() => deleteReply(post.id, reply.id)}
+                          className="ml-auto text-[11px] text-gray-300 hover:text-red-500 transition-colors"
+                        >
+                          Delete
+                        </button>
                       </div>
                       <div className="text-[13px] leading-relaxed text-gray-700 whitespace-pre-wrap">
                         {reply.content}

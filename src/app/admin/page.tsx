@@ -1,9 +1,31 @@
 import { getDb } from '@/lib/db/index';
-import { listModelProviders, listRules, listTools } from '@/lib/db/configs';
+import { listModelProviders, createModelProvider, updateModelProvider, listRules, listTools } from '@/lib/db/configs';
 import { AdminClient } from '@/components/admin-client';
+
+const SEED_PROVIDERS = [
+  { name: 'anthropic', display_name: 'Anthropic', api_base: 'https://api.anthropic.com', default_model: 'claude-sonnet-4-20250514' },
+  { name: 'openai', display_name: 'OpenAI', api_base: null, default_model: 'gpt-4o-mini' },
+  { name: 'moonshot', display_name: 'Moonshot / Kimi', api_base: 'https://api.moonshot.ai/v1', default_model: null },
+  { name: 'deepseek', display_name: 'DeepSeek', api_base: 'https://api.deepseek.com', default_model: null },
+  { name: 'google', display_name: 'Google', api_base: 'https://generativelanguage.googleapis.com/v1beta/openai/', default_model: null },
+];
+
+function seedProviders(db: ReturnType<typeof getDb>) {
+  const existing = listModelProviders(db);
+  for (const seed of SEED_PROVIDERS) {
+    const found = existing.find(p => p.name === seed.name);
+    if (!found) {
+      createModelProvider(db, seed.name, seed.display_name, seed.api_base, undefined, seed.default_model ?? undefined);
+    } else if (!found.api_base && seed.api_base) {
+      // Backfill api_base for existing providers missing it
+      updateModelProvider(db, found.provider_id, { api_base: seed.api_base });
+    }
+  }
+}
 
 export default function AdminPage() {
   const db = getDb();
+  seedProviders(db);
   const providers = listModelProviders(db);
   const rules = listRules(db);
   const tools = listTools(db);
@@ -37,6 +59,7 @@ export default function AdminPage() {
           description: t.description,
           platform: t.platform,
           enabled: t.enabled,
+          config_json: t.config_json,
           capabilities: t.capabilities.map(c => ({
             capability_id: c.capability_id,
             name: c.name,

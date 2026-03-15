@@ -51,8 +51,13 @@ export function buildSystemPrompt(
   rules: Array<{ prompt_text: string }>,
   tools: ToolDef[],
   memory: Array<{ topic: string; content: string }>,
+  mechanicsFile?: string | null,
 ): string {
   const parts: string[] = [promptTemplate];
+
+  if (mechanicsFile) {
+    parts.push('\n\n' + mechanicsFile);
+  }
 
   if (rules.length > 0) {
     parts.push('\n\n## Trading Rules\n' + rules.map(r => `- ${r.prompt_text}`).join('\n'));
@@ -113,7 +118,11 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
     const sleepMs = INTERVAL_MS[version.schedule_interval] ?? INTERVAL_MS['1h'];
     const maxIterations = config.maxIterationsPerCycle ?? 20;
 
-    // 4. Enter main loop
+    // 4. Stagger startup to avoid rate limit storms
+    const startupDelay = Math.random() * 10000; // 0-10s random delay
+    await new Promise(r => setTimeout(r, startupDelay));
+
+    // 5. Enter main loop
     while (!shutdownRequested) {
       let cycleId = randomUUID();
 
@@ -135,6 +144,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
           rules,
           registry.getDefinitions(),
           memory,
+          version.mechanics_file,
         );
 
         // e. Initialize conversation
@@ -150,13 +160,20 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
           // Log thinking
           if (response.content) {
             insertEvent(db, config.agentId, 'thinking', cycleId, JSON.stringify({ content: response.content }));
-            conversation.push({ role: 'assistant', content: response.content });
           }
 
           // No tool calls = final response, exit conversation loop
           if (!response.tool_calls || response.tool_calls.length === 0) {
+            conversation.push({ role: 'assistant', content: response.content });
             break;
           }
+
+          // Push assistant message WITH tool_calls so the API can match tool results
+          conversation.push({
+            role: 'assistant',
+            content: response.content,
+            tool_calls: response.tool_calls,
+          });
 
           // Process tool calls
           for (const toolCall of response.tool_calls) {

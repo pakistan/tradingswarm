@@ -17,27 +17,9 @@ if (!agentId || !configVersionId || !dbPath) {
   process.exit(1);
 }
 
-// Handle shutdown signals
-process.on('SIGTERM', () => {
-  console.log(`[worker:${agentId}] Received SIGTERM, shutting down gracefully...`);
-  requestShutdown();
-});
+process.on('SIGTERM', () => { requestShutdown(); });
+process.on('SIGINT', () => { requestShutdown(); });
 
-process.on('SIGINT', () => {
-  console.log(`[worker:${agentId}] Received SIGINT, shutting down gracefully...`);
-  requestShutdown();
-});
-
-// Notify parent we're ready
-process.send?.({ type: 'ready', agentId });
-
-// Run the loop
 runAgentLoop({ agentId, configVersionId, dbPath })
-  .then(() => {
-    console.log(`[worker:${agentId}] Loop exited cleanly.`);
-    process.exit(0);
-  })
-  .catch((err) => {
-    console.error(`[worker:${agentId}] Fatal error:`, err);
-    process.exit(1);
-  });
+  .then(() => process.exit(0))
+  .catch((err) => { console.error(`[worker:${agentId}]`, err); process.exit(1); });

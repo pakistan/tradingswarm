@@ -49,6 +49,7 @@ export function migrate(db: Database.Database): void {
       description   TEXT,
       platform      TEXT NOT NULL,
       enabled       INTEGER NOT NULL DEFAULT 1,
+      config_json   TEXT,
       created_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -262,4 +263,85 @@ export function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_agent_events_type ON agent_events(agent_id, event_type, created_at);
     CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel_id);
   `);
+
+  // Add config_json column if missing (migration for existing DBs)
+  const cols = db.prepare("PRAGMA table_info(tools)").all() as { name: string }[];
+  if (!cols.find(c => c.name === 'config_json')) {
+    db.exec('ALTER TABLE tools ADD COLUMN config_json TEXT');
+  }
+
+  // Seed tools if empty
+  const toolCount = (db.prepare('SELECT COUNT(*) as c FROM tools').get() as { c: number }).c;
+  if (toolCount === 0) {
+    seedTools(db);
+  }
+
+  // Seed web search tool if missing
+  const hasWebSearch = db.prepare("SELECT 1 FROM tools WHERE name = 'Web Search'").get();
+  if (!hasWebSearch) {
+    seedWebSearchTool(db);
+  }
+}
+
+function seedTools(db: Database.Database): void {
+  const insert = db.prepare('INSERT INTO tools (name, platform, description) VALUES (?, ?, ?)');
+  const insertCap = db.prepare('INSERT INTO tool_capabilities (tool_id, name, handler, description) VALUES (?, ?, ?, ?)');
+
+  const tools: { name: string; platform: string; description: string; capabilities: { name: string; description: string }[] }[] = [
+    { name: 'Polymarket Markets', platform: 'polymarket', description: 'Search and browse prediction markets', capabilities: [
+      { name: 'pm_markets', description: 'List prediction markets with prices and volume' },
+      { name: 'pm_market_detail', description: 'Get detailed info about a specific market' },
+      { name: 'pm_orderbook', description: 'View order book depth before trading' },
+      { name: 'pm_price_history', description: 'Get price history over time' },
+      { name: 'pm_search', description: 'Search markets by keyword' },
+    ]},
+    { name: 'Polymarket Trading', platform: 'polymarket', description: 'Buy and sell prediction market outcomes', capabilities: [
+      { name: 'pm_buy', description: 'Buy shares of a prediction market outcome' },
+      { name: 'pm_sell', description: 'Sell shares of an outcome you hold' },
+      { name: 'pm_orders', description: 'List pending orders' },
+      { name: 'pm_cancel_order', description: 'Cancel a pending order' },
+      { name: 'pm_cancel_all', description: 'Cancel all pending orders' },
+    ]},
+    { name: 'Polymarket Portfolio', platform: 'polymarket', description: 'View positions, balance, and trade history', capabilities: [
+      { name: 'pm_balance', description: 'Get cash balance and portfolio summary' },
+      { name: 'pm_positions', description: 'Get current positions with unrealized P&L' },
+      { name: 'pm_history', description: 'Get trade history' },
+      { name: 'pm_leaderboard', description: 'View agent leaderboard' },
+      { name: 'pm_snapshot', description: 'Record trade reasoning and market state' },
+    ]},
+    { name: 'Coordination Channels', platform: 'hub', description: 'Post and read messages on the agent message board', capabilities: [
+      { name: 'hub_list_channels', description: 'List coordination channels' },
+      { name: 'hub_read', description: 'Read posts from a channel' },
+      { name: 'hub_post', description: 'Post a message to a channel' },
+    ]},
+    { name: 'Agent Memory', platform: 'agent', description: 'Persistent memory across trading cycles', capabilities: [
+      { name: 'memory_get', description: 'Get stored memory entries' },
+      { name: 'memory_set', description: 'Store or update a memory entry' },
+    ]},
+    { name: 'Workspace', platform: 'workspace', description: 'Agent workspace for notes, analysis, and code execution', capabilities: [
+      { name: 'notepad_read', description: 'Read files from workspace' },
+      { name: 'notepad_write', description: 'Write files to workspace' },
+      { name: 'notepad_list', description: 'List workspace files' },
+      { name: 'run_code', description: 'Execute Python or Node.js scripts' },
+    ]},
+  ];
+
+  const txn = db.transaction(() => {
+    for (const tool of tools) {
+      const result = insert.run(tool.name, tool.platform, tool.description);
+      const toolId = Number(result.lastInsertRowid);
+      for (const cap of tool.capabilities) {
+        insertCap.run(toolId, cap.name, cap.name, cap.description);
+      }
+    }
+  });
+  txn();
+}
+
+function seedWebSearchTool(db: Database.Database): void {
+  const result = db.prepare('INSERT INTO tools (name, platform, description, config_json) VALUES (?, ?, ?, ?)')
+    .run('Web Search', 'web', 'Search the web for information using Brave Search API', JSON.stringify({ api_key: '' }));
+  const toolId = Number(result.lastInsertRowid);
+  db.prepare('INSERT INTO tool_capabilities (tool_id, name, handler, description) VALUES (?, ?, ?, ?)')
+    .run(toolId, 'web_search', 'web_search', 'Search the web and return top results');
 }

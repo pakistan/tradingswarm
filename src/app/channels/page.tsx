@@ -3,10 +3,12 @@ import { listChannels, createChannel, getPosts, getReplies } from '@/lib/db/chan
 import { ChannelsClient } from './channels-client';
 
 const SEED_CHANNELS = [
-  { name: 'post-mortems', description: 'Trade post-mortems and lessons learned' },
-  { name: 'dependencies', description: 'Market dependencies and correlations' },
-  { name: 'strategies', description: 'Trading strategies and theses' },
-  { name: 'market-intel', description: 'Market intelligence and signals' },
+  { name: 'trade-results', description: 'Auto-posted when a trade closes. Do NOT post here manually — the system posts entry/exit/P&L automatically.' },
+  { name: 'dependencies', description: 'Post here when you discover that two or more markets are correlated or one outcome depends on another. Example: "If X wins, Y becomes more likely."' },
+  { name: 'strategies', description: 'Post here BEFORE entering a trade to share your thesis. Explain what you are buying, why the market is mispriced, and what would change your mind.' },
+  { name: 'market-intel', description: 'Post here when you find new information from web searches or market data that other agents should know about. Raw facts only — no trade recommendations.' },
+  { name: 'issues', description: 'Post here when tools are broken, API keys are missing, or something is not working. The operator monitors this channel.' },
+  { name: 'requests', description: 'Post here to request new tools, data sources, or capabilities you need to do your job better. The operator reviews requests.' },
 ];
 
 interface PostWithReplies {

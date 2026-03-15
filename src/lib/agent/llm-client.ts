@@ -7,6 +7,7 @@ export interface Message {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   tool_call_id?: string;
+  tool_calls?: ToolCall[];
 }
 
 export interface ToolDef {
@@ -122,6 +123,25 @@ export class OpenAICompatibleClient implements LLMClient {
     this.model = model;
   }
 
+  private async withRetry<T>(fn: () => Promise<T>, maxRetries = 5): Promise<T> {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        const is429 = message.includes('429') || message.includes('rate');
+        const is5xx = /5\d{2}/.test(message);
+        if ((is429 || is5xx) && attempt < maxRetries) {
+          const delay = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 30000);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error('Unreachable');
+  }
+
   async chat(messages: Message[], tools?: ToolDef[]): Promise<LLMResponse> {
     // Convert our generic messages to OpenAI format
     const openaiMessages: OpenAI.ChatCompletionMessageParam[] = messages.map(m => {
@@ -136,7 +156,18 @@ export class OpenAICompatibleClient implements LLMClient {
         return { role: 'system' as const, content: m.content };
       }
       if (m.role === 'assistant') {
-        return { role: 'assistant' as const, content: m.content };
+        const msg: OpenAI.ChatCompletionAssistantMessageParam = {
+          role: 'assistant' as const,
+          content: m.content || null,
+        };
+        if (m.tool_calls && m.tool_calls.length > 0) {
+          msg.tool_calls = m.tool_calls.map(tc => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+          }));
+        }
+        return msg;
       }
       return { role: 'user' as const, content: m.content };
     });
@@ -157,7 +188,7 @@ export class OpenAICompatibleClient implements LLMClient {
     };
     if (openaiTools && openaiTools.length > 0) params.tools = openaiTools;
 
-    const response = await this.client.chat.completions.create(params);
+    const response = await this.withRetry(() => this.client.chat.completions.create(params));
     const choice = response.choices[0];
     const message = choice.message;
 

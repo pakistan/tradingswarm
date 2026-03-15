@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from 'node:child_process';
+import { fork, spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { getAgent, updateAgentStatus, listAgents } from '@/lib/db/agents';
@@ -56,15 +56,21 @@ export class AgentManager {
 
     const configVersionId = agent.config_version_id;
 
-    const child = fork(this.workerPath, [], {
+    // Spawn worker as a clean tsx process — not fork — to avoid inheriting Next.js patches
+    const projectRoot = path.resolve(process.cwd());
+    const tsxBin = path.join(projectRoot, 'node_modules', '.bin', 'tsx');
+    const child = spawn(tsxBin, [this.workerPath], {
+      cwd: projectRoot,
       env: {
-        ...process.env,
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        NODE_ENV: process.env.NODE_ENV,
         AGENT_ID: agentId,
         CONFIG_VERSION_ID: String(configVersionId),
         DATABASE_PATH: this.dbPath,
       },
-      stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-    });
+      stdio: ['pipe', 'inherit', 'inherit'],
+    }) as ChildProcess;
 
     const managed: ManagedAgent = {
       process: child,

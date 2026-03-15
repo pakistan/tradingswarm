@@ -1,8 +1,8 @@
 import { getDb } from '@/lib/db/index';
 import { listAgents } from '@/lib/db/agents';
 import { getLeaderboard } from '@/lib/db/trades';
-import { getVersion, getConfig } from '@/lib/db/configs';
-import { AgentsClient, type AgentCardData } from '@/components/agents-client';
+import { getVersion, getConfig, listConfigs, getLatestVersion } from '@/lib/db/configs';
+import { AgentsClient, type AgentCardData, type ConfigCardData } from '@/components/agents-client';
 import type { AgentRow } from '@/lib/types';
 import type { LeaderboardRow } from '@/lib/db/trades';
 
@@ -26,12 +26,17 @@ function buildAgentCards(
     let modelName: string | null = null;
     let scheduleInterval: string | null = null;
 
+    let promptTemplate: string | null = null;
+    let mechanicsFile: string | null = null;
+
     if (agent.config_version_id) {
       const version = getVersion(db, agent.config_version_id);
       if (version) {
         modelName = version.model_name;
         configVersion = version.version_num;
         scheduleInterval = version.schedule_interval;
+        promptTemplate = version.prompt_template;
+        mechanicsFile = version.mechanics_file;
         const config = getConfig(db, version.config_id);
         if (config) configName = config.name;
       }
@@ -70,6 +75,39 @@ function buildAgentCards(
       pending_orders_count: pendingOrdersCount,
       memory_count: memoryCount,
       trade_history_count: tradeHistoryCount,
+      prompt_template: promptTemplate,
+      mechanics_file: mechanicsFile,
+    };
+  });
+}
+
+function buildConfigCards(): ConfigCardData[] {
+  const db = getDb();
+  const configs = listConfigs(db);
+  return configs.map(config => {
+    const latestVersion = getLatestVersion(db, config.config_id);
+    const agentCount = (db.prepare(
+      `SELECT COUNT(*) as count FROM agents WHERE config_version_id IN (SELECT version_id FROM config_versions WHERE config_id = ?)`
+    ).get(config.config_id) as { count: number }).count;
+    const runningCount = (db.prepare(
+      `SELECT COUNT(*) as count FROM agents WHERE status = 'running' AND config_version_id IN (SELECT version_id FROM config_versions WHERE config_id = ?)`
+    ).get(config.config_id) as { count: number }).count;
+    let toolsCount = 0;
+    if (latestVersion) {
+      toolsCount = (db.prepare(
+        `SELECT COUNT(*) as count FROM config_version_capabilities WHERE version_id = ? AND enabled = 1`
+      ).get(latestVersion.version_id) as { count: number }).count;
+    }
+    return {
+      config_id: config.config_id,
+      name: config.name,
+      description: config.description,
+      model_name: latestVersion?.model_name ?? '',
+      latest_version: latestVersion?.version_num ?? 0,
+      active_tools: toolsCount,
+      agent_count: agentCount,
+      running_agents: runningCount,
+      updated_at: config.updated_at,
     };
   });
 }
@@ -79,10 +117,10 @@ export default function AgentsPage() {
   const agents = listAgents(db);
   const leaderboard = getLeaderboard(db);
   const agentCards = buildAgentCards(agents, leaderboard);
+  const configCards = buildConfigCards();
 
   return (
     <main className="p-8 max-w-7xl mx-auto">
-      {/* Page Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Agents</h1>
@@ -95,7 +133,7 @@ export default function AgentsPage() {
         </button>
       </div>
 
-      <AgentsClient agents={agentCards} />
+      <AgentsClient agents={agentCards} configs={configCards} />
     </main>
   );
 }

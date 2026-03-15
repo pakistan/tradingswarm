@@ -1,5 +1,4 @@
-import type { OrderBook, OrderBookLevel } from '@/lib/trading/types.js';
-import type { GammaMarket, PricePoint } from './types.js';
+import type { GammaMarket, OrderBook, OrderBookLevel, PricePoint } from './types';
 
 const GAMMA_BASE = 'https://gamma-api.polymarket.com';
 const CLOB_BASE = 'https://clob.polymarket.com';
@@ -9,7 +8,7 @@ const BASE_BACKOFF_MS = 1000;
 
 export class PolymarketAPI {
   private lastRequestTime = 0;
-  private minIntervalMs = 200; // 5 req/s default
+  private minIntervalMs = 200;
 
   private async rateLimitedFetch(url: string, init?: RequestInit): Promise<Response> {
     const now = Date.now();
@@ -30,8 +29,6 @@ export class PolymarketAPI {
     throw new Error(`API failed after ${MAX_RETRIES} retries: ${url}`);
   }
 
-  // ---- Gamma API (public, no auth) ----
-
   async listMarkets(params: {
     query?: string; category?: string; min_volume?: number;
     max_end_date?: string; limit?: number; offset?: number;
@@ -43,7 +40,7 @@ export class PolymarketAPI {
     if (params.min_volume) url.searchParams.set('volume_num_min', String(params.min_volume));
     if (params.max_end_date) url.searchParams.set('end_date_max', params.max_end_date);
     if (params.closed !== undefined) url.searchParams.set('closed', String(params.closed));
-    if (params.category) url.searchParams.set('tag_id', params.category); // categories are tags in Gamma
+    if (params.category) url.searchParams.set('tag_id', params.category);
     const res = await this.rateLimitedFetch(url.toString());
     return await res.json() as GammaMarket[];
   }
@@ -61,8 +58,6 @@ export class PolymarketAPI {
     return await res.json() as GammaMarket;
   }
 
-  // ---- CLOB API (order book is public, trading needs auth) ----
-
   async getOrderBook(tokenId: string): Promise<OrderBook> {
     const url = new URL(`${CLOB_BASE}/book`);
     url.searchParams.set('token_id', tokenId);
@@ -77,10 +72,10 @@ export class PolymarketAPI {
 
     const bids: OrderBookLevel[] = raw.bids
       .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
-      .sort((a, b) => b.price - a.price); // highest bid first
+      .sort((a, b) => b.price - a.price);
     const asks: OrderBookLevel[] = raw.asks
       .map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }))
-      .sort((a, b) => a.price - b.price); // lowest ask first
+      .sort((a, b) => a.price - b.price);
 
     const bestBid = bids.length > 0 ? bids[0].price : 0;
     const bestAsk = asks.length > 0 ? asks[0].price : 1;

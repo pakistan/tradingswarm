@@ -13,7 +13,7 @@ export function getAgentManager(): AgentManager {
 
   const db = getDb();
   const dbPath = process.env.DATABASE_PATH ?? path.join(process.cwd(), 'data', 'tradingswarm.db');
-  const workerPath = path.join(path.dirname(new URL(import.meta.url).pathname), 'worker.ts');
+  const workerPath = path.join(process.cwd(), 'src', 'lib', 'agent', 'worker.ts');
 
   _manager = new AgentManager(db, dbPath, workerPath);
 

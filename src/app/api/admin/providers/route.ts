@@ -11,14 +11,14 @@ export async function GET() {
 export async function PUT(request: Request) {
   try {
     const body = await request.json();
-    const { provider_id, api_key, default_model, enabled } = body;
+    const { provider_id, api_key, default_model, enabled, api_base } = body;
 
     if (!provider_id || typeof provider_id !== 'number') {
       return NextResponse.json({ error: 'provider_id is required' }, { status: 400 });
     }
 
     const db = getDb();
-    updateModelProvider(db, provider_id, { api_key, default_model, enabled });
+    updateModelProvider(db, provider_id, { api_key, default_model, enabled, api_base });
     const providers = listModelProviders(db);
     return NextResponse.json(providers);
   } catch (err) {

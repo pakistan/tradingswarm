@@ -1,5 +1,3 @@
-// ---- Polymarket-specific API types ----
-
 export interface GammaMarket {
   id: string;
   question: string;
@@ -25,4 +23,18 @@ export interface GammaMarket {
 export interface PricePoint {
   t: number;
   p: number;
+}
+
+export interface OrderBookLevel {
+  price: number;
+  size: number;
+}
+
+export interface OrderBook {
+  asset_id: string;
+  bids: OrderBookLevel[];
+  asks: OrderBookLevel[];
+  spread: number;
+  mid_price: number;
+  timestamp: string;
 }

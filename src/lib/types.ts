@@ -35,6 +35,7 @@ export interface ToolRow {
   description: string | null;
   platform: string;
   enabled: number;
+  config_json: string | null;
   created_at: string;
 }
 
