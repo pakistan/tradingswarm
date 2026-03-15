@@ -32,7 +32,7 @@ const EVENT_LABELS: Record<string, string> = {
 
 const FILTER_PRESETS = [
   { key: 'all', label: 'All' },
-  { key: 'trades', label: 'Trades' },
+  { key: 'orders', label: 'Orders' },
   { key: 'thinking', label: 'Thinking' },
   { key: 'tool_calls', label: 'Tool Calls' },
   { key: 'errors', label: 'Errors' },
@@ -45,11 +45,11 @@ function matchesFilter(event: FeedEvent, filter: FilterPreset, selectedAgent: st
   if (selectedAgent && event.agentId !== selectedAgent) return false;
   switch (filter) {
     case 'all': return true;
-    case 'trades': return event.type === 'tool_call' && (event.content.includes('pm_buy') || event.content.includes('pm_sell'));
+    case 'orders': return (event.type === 'tool_call' || event.type === 'tool_result') && (event.content.includes('buy') || event.content.includes('sell') || event.content.includes('Filled') || event.content.includes('cancel'));
     case 'thinking': return event.type === 'thinking';
     case 'tool_calls': return event.type === 'tool_call' || event.type === 'tool_result';
     case 'errors': return event.type === 'error';
-    case 'research': return event.type === 'tool_call' && (event.content.includes('web_search') || event.content.includes('pm_search') || event.content.includes('pm_orderbook') || event.content.includes('pm_price_history'));
+    case 'research': return event.type === 'tool_call' && (event.content.includes('web') || event.content.includes('search') || event.content.includes('orderbook') || event.content.includes('price history'));
     default: return true;
   }
 }
@@ -217,7 +217,7 @@ export function FeedClient({ agentIds }: Props) {
   const filtered = events.filter(e => matchesFilter(e, filter, selectedAgent));
   const counts = {
     all: events.length,
-    trades: events.filter(e => matchesFilter(e, 'trades', selectedAgent)).length,
+    orders: events.filter(e => matchesFilter(e, 'orders', selectedAgent)).length,
     thinking: events.filter(e => matchesFilter(e, 'thinking', selectedAgent)).length,
     tool_calls: events.filter(e => matchesFilter(e, 'tool_calls', selectedAgent)).length,
     errors: events.filter(e => matchesFilter(e, 'errors', selectedAgent)).length,

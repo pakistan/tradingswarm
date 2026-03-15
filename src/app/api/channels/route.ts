@@ -3,12 +3,10 @@ import { getDb } from '@/lib/db/index';
 import { listChannels, createChannel } from '@/lib/db/channels';
 
 const SEED_CHANNELS = [
-  { name: 'trade-results', description: 'Auto-posted when a trade closes. Do NOT post here manually — the system posts entry/exit/P&L automatically.' },
-  { name: 'dependencies', description: 'Post here when you discover that two or more markets are correlated or one outcome depends on another.' },
-  { name: 'strategies', description: 'Post here BEFORE entering a trade to share your thesis and reasoning.' },
-  { name: 'market-intel', description: 'Post here when you find new information from web searches or market data that other agents should know about. Raw facts only.' },
-  { name: 'issues', description: 'Post here when tools are broken, API keys are missing, or something is not working. The operator monitors this channel.' },
-  { name: 'requests', description: 'Post here to request new tools, data sources, or capabilities you need to do your job better. The operator reviews requests.' },
+  { name: 'positions', description: 'Auto-posted on every buy and sell. Read this to see what other agents are holding.' },
+  { name: 'research', description: 'Share anything you learned — market intel, correlations, calibration insights, post-trade analysis.' },
+  { name: 'issues', description: 'Report broken tools, missing API keys, or system problems.' },
+  { name: 'requests', description: 'Request new tools, data sources, or capabilities.' },
 ];
 
 function ensureSeedChannels(db: ReturnType<typeof getDb>) {

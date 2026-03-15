@@ -24,6 +24,7 @@ export interface TradeResult {
 
 export interface PositionSummary {
   agent_id: string;
+  platform: string;
   outcome_id: string;
   outcome_name: string | null;
   market_question: string | null;
@@ -80,6 +81,13 @@ export class TradingService {
     return platform;
   }
 
+  private postToChannel(channelName: string, agentId: string, content: string): void {
+    try {
+      const ch = this.db.prepare('SELECT channel_id FROM channels WHERE name = ?').get(channelName) as { channel_id: number } | undefined;
+      if (ch) channels.createPost(this.db, ch.channel_id, agentId, content);
+    } catch { /* don't fail trades if posting fails */ }
+  }
+
   // --- Execute trades ---
 
   async buy(platform: string, agentId: string, assetId: string, amount: number, agentContext?: string): Promise<TradeResult> {
@@ -112,6 +120,11 @@ export class TradingService {
         JSON.stringify({ mid_price: orderBook.mid_price, spread: orderBook.spread, best_ask: bestAsk }));
     }
 
+    // Cache outcome if not already in DB (so dashboard can show names)
+    if (!trades.getOutcomeById(this.db, assetId)) {
+      trades.upsertOutcome(this.db, { outcome_id: assetId, market_id: '', name: assetId, current_price: fill.avg_fill_price });
+    }
+
     // Execute
     agentsDb.updateAgentCash(this.db, agentId, -fill.filled_amount);
 
@@ -130,6 +143,12 @@ export class TradingService {
     } else {
       trades.upsertPosition(this.db, agentId, assetId, fill.filled_shares, fill.avg_fill_price, platform);
     }
+    // Set current price to fill price so dashboard always has something to show
+    trades.updatePositionPrice(this.db, agentId, assetId, fill.avg_fill_price);
+
+    // Auto-post to #positions
+    this.postToChannel('positions', agentId,
+      `**BUY** ${platform} | ${assetId.slice(0, 20)}... | ${fill.filled_shares.toFixed(1)} shares @ $${fill.avg_fill_price.toFixed(3)} ($${fill.filled_amount.toFixed(0)})`);
 
     return {
       success: true, order_id: orderId,
@@ -181,14 +200,11 @@ export class TradingService {
       opened_at: position.updated_at ?? new Date().toISOString(),
     });
 
-    // Auto-post to trade-results
+    // Auto-post to #positions
     try {
-      const ch = this.db.prepare("SELECT channel_id FROM channels WHERE name = 'trade-results'").get() as { channel_id: number } | undefined;
-      if (ch) {
-        const sign = pnl >= 0 ? '+' : '';
-        channels.createPost(this.db, ch.channel_id, agentId,
-          `**Trade Closed** | ${market?.question ?? 'Unknown'} (${outcome?.name ?? '?'})\nEntry: $${position.avg_entry_price.toFixed(3)} → Exit: $${fill.avg_fill_price.toFixed(3)} | ${fill.filled_shares.toFixed(1)} shares | P&L: ${sign}$${pnl.toFixed(2)}`);
-      }
+      const sign = pnl >= 0 ? '+' : '';
+      this.postToChannel('positions', agentId,
+        `**SELL** ${platform} | ${market?.question ?? assetId.slice(0, 20) + '...'} (${outcome?.name ?? '?'}) | ${fill.filled_shares.toFixed(1)} shares @ $${fill.avg_fill_price.toFixed(3)} | P&L: ${sign}$${pnl.toFixed(2)}`);
     } catch { /* don't fail trade if post fails */ }
 
     return {
@@ -220,7 +236,7 @@ export class TradingService {
       const unrealizedPnl = currentPrice ? (currentPrice - p.avg_entry_price) * p.shares : null;
 
       summaries.push({
-        agent_id: agentId, outcome_id: p.outcome_id,
+        agent_id: agentId, platform: p.platform ?? 'polymarket', outcome_id: p.outcome_id,
         outcome_name: outcome?.name ?? null,
         market_question: market?.question ?? null,
         shares: p.shares, avg_entry_price: p.avg_entry_price,
@@ -280,7 +296,7 @@ export class TradingService {
           const outcome = trades.getOutcomeById(this.db, p.outcome_id);
           const market = outcome ? trades.getMarketByOutcomeId(this.db, p.outcome_id) : undefined;
           return {
-            agent_id: p.agent_id, outcome_id: p.outcome_id,
+            agent_id: p.agent_id, platform: p.platform ?? 'polymarket', outcome_id: p.outcome_id,
             outcome_name: outcome?.name ?? null, market_question: market?.question ?? null,
             shares: p.shares, avg_entry_price: p.avg_entry_price,
             current_price: p.current_price, unrealized_pnl: p.unrealized_pnl,

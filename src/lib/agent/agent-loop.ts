@@ -1,6 +1,19 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { migrate } from '@/lib/db/schema';
+
+function logError(agentId: string, cycleId: string, error: string) {
+  try {
+    const logDir = join(process.cwd(), 'data', 'logs');
+    mkdirSync(logDir, { recursive: true });
+    const timestamp = new Date().toISOString();
+    const line = `${timestamp} [${agentId}] [${cycleId}] ${error}\n`;
+    appendFileSync(join(logDir, 'errors.log'), line);
+    appendFileSync(join(logDir, `${agentId}.log`), line);
+  } catch { /* don't fail on log failure */ }
+}
 import { getAgent } from '@/lib/db/agents';
 import { getVersion, getVersionRules } from '@/lib/db/configs';
 import { getMemory, insertEvent } from '@/lib/db/observability';
@@ -169,7 +182,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
 
     // Calculate sleep interval
     const sleepMs = INTERVAL_MS[version.schedule_interval] ?? INTERVAL_MS['1h'];
-    const maxIterations = config.maxIterationsPerCycle ?? 20;
+    const maxIterations = config.maxIterationsPerCycle ?? 12;
 
     // 4. Stagger startup to avoid rate limit storms
     const startupDelay = Math.random() * 10000; // 0-10s random delay
@@ -208,11 +221,20 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
 
         // f. Conversation loop (tool call rounds)
         for (let iteration = 0; iteration < maxIterations; iteration++) {
+          // Hard cap: if conversation is too long, keep system + user + last 8 messages
+          if (conversation.length > 20) {
+            const system = conversation[0];
+            const user = conversation[1];
+            const recent = conversation.slice(-8);
+            conversation.length = 0;
+            conversation.push(system, user, ...recent);
+          }
+
           // Compact old tool results — the agent already processed them, shrink to summaries
           // Keep the most recent 6 messages at full fidelity, compact everything before that
           if (conversation.length > 8) {
             const cutoff = conversation.length - 6;
-            for (let i = 1; i < cutoff; i++) {
+            for (let i = 2; i < cutoff; i++) {
               if (conversation[i].role === 'tool' && conversation[i].content.length > 200) {
                 conversation[i] = {
                   ...conversation[i],
@@ -276,6 +298,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         insertEvent(db, config.agentId, 'error', cycleId, JSON.stringify({ error: errorMsg }));
+        logError(config.agentId, cycleId, errorMsg);
       }
 
       // Notify cycle complete (for testing)

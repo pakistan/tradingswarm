@@ -8,6 +8,7 @@ import * as snapshots from '@/lib/db/snapshots';
 import { getMemory, upsertMemory } from '@/lib/db/observability';
 import { PolymarketAPI } from '@/lib/platforms/polymarket/api';
 import { TradingService } from '@/lib/trading/service';
+import { MarketScanner, type SpreadSignal } from '@/lib/trading/scanner';
 import { PolymarketPlatform } from '@/lib/platforms/polymarket/adapter';
 import { BinancePlatform } from '@/lib/platforms/binance/adapter';
 import type { GammaMarket } from '@/lib/platforms/polymarket/types';
@@ -96,7 +97,7 @@ const PM_TOOL_DEFS: Record<string, ToolDef> = {
     parameters: {
       type: 'object',
       properties: {
-        outcome_id: { type: 'string', description: 'Outcome/token ID to buy' },
+        outcome_id: { type: 'string', description: 'The clobTokenId (long hash) from pm_markets. NOT the market ID.' },
         amount: { type: 'number', description: 'Dollar amount to spend' },
         agent_context: { type: 'string', description: 'Your reasoning for this trade (recorded for analysis)' },
       },
@@ -109,7 +110,7 @@ const PM_TOOL_DEFS: Record<string, ToolDef> = {
     parameters: {
       type: 'object',
       properties: {
-        outcome_id: { type: 'string', description: 'Outcome/token ID to sell' },
+        outcome_id: { type: 'string', description: 'The clobTokenId (long hash) from pm_markets. NOT the market ID.' },
         shares: { type: 'number', description: 'Number of shares to sell' },
         agent_context: { type: 'string', description: 'Your reasoning for this trade' },
       },
@@ -176,11 +177,11 @@ const PM_TOOL_DEFS: Record<string, ToolDef> = {
   },
   pm_orderbook: {
     name: 'pm_orderbook',
-    description: 'Get the order book for an outcome. Shows bids, asks, spread, mid price, and depth. Check this BEFORE trading to understand liquidity.',
+    description: 'Get the order book for an outcome. Shows bids, asks, spread, mid price, and depth. Check this BEFORE trading. IMPORTANT: Use the clobTokenId (long hash) from pm_markets, NOT the market ID (short number).',
     parameters: {
       type: 'object',
       properties: {
-        outcome_id: { type: 'string', description: 'Outcome/token ID' },
+        outcome_id: { type: 'string', description: 'The clobTokenId (long hash string) from pm_markets results. NOT the market ID.' },
       },
       required: ['outcome_id'],
     },
@@ -191,7 +192,7 @@ const PM_TOOL_DEFS: Record<string, ToolDef> = {
     parameters: {
       type: 'object',
       properties: {
-        outcome_id: { type: 'string', description: 'Outcome/token ID' },
+        outcome_id: { type: 'string', description: 'The clobTokenId (long hash) from pm_markets. NOT the market ID.' },
         interval: { type: 'string', description: 'Time interval: 1m, 5m, 1h, 1d (default 1h)' },
       },
       required: ['outcome_id'],
@@ -312,6 +313,61 @@ const MARKET_DATA_TOOL_DEFS: Record<string, ToolDef> = {
       required: ['series_id'],
     },
   },
+  crypto_buy: {
+    name: 'crypto_buy',
+    description: 'Paper trade: buy crypto against real Binance order book.',
+    parameters: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Trading pair, e.g. BTCUSDT, ETHUSDT, SOLUSDT' },
+        amount: { type: 'number', description: 'Dollar amount to spend (max $500)' },
+        agent_context: { type: 'string', description: 'Your reasoning for this trade' },
+      },
+      required: ['symbol', 'amount'],
+    },
+  },
+  crypto_sell: {
+    name: 'crypto_sell',
+    description: 'Paper trade: sell crypto you hold.',
+    parameters: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Trading pair, e.g. BTCUSDT' },
+        shares: { type: 'number', description: 'Amount of crypto to sell' },
+        agent_context: { type: 'string', description: 'Your reasoning for this trade' },
+      },
+      required: ['symbol', 'shares'],
+    },
+  },
+  kalshi_markets: {
+    name: 'kalshi_markets',
+    description: 'Browse prediction markets on Kalshi (another prediction market platform). Compare prices to Polymarket.',
+    parameters: {
+      type: 'object',
+      properties: {
+        category: { type: 'string', description: 'Category filter: Politics, Climate and Weather, Science and Technology, World, Economics' },
+        limit: { type: 'number', description: 'Max results (default 20)' },
+      },
+    },
+  },
+  forex_rates: {
+    name: 'forex_rates',
+    description: 'Get current forex exchange rates (USD base). Useful for geopolitical market context.',
+    parameters: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  scan_spreads: {
+    name: 'scan_spreads',
+    description: 'Scan for cross-market discrepancies. Returns signals where different markets disagree about the same thing.',
+    parameters: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', description: 'Scan type: "complements" (YES+NO!=1), "cross_platform" (Polymarket vs Kalshi), "crypto" (prediction markets vs crypto prices), or "all"' },
+      },
+    },
+  },
 };
 
 const CHANNEL_TOOL_DEFS: Record<string, ToolDef> = {
@@ -423,6 +479,12 @@ function wrapWithLogging(
         error: errorMsg,
         duration_ms: Date.now() - start,
       });
+      // Log to file
+      try {
+        const logDir = path.join(process.cwd(), 'data', 'logs');
+        fs.mkdirSync(logDir, { recursive: true });
+        fs.appendFileSync(path.join(logDir, 'errors.log'), `${new Date().toISOString()} [${agentId}] tool:${toolName} ${errorMsg}\n`);
+      } catch { /* don't fail */ }
       return JSON.stringify({ error: errorMsg });
     }
   };
@@ -830,11 +892,80 @@ export function buildToolRegistry(
     }
   }
 
-  const marketConfig = getToolConfig(db, 'Market Data');
-  const marketHandlers = buildMarketDataHandlers(marketConfig.alpha_vantage_key ?? '', marketConfig.fred_key ?? '');
+  const avConfig = getToolConfig(db, 'Alpha Vantage');
+  const fredConfig = getToolConfig(db, 'FRED');
+  const marketHandlers = buildMarketDataHandlers(avConfig.api_key ?? '', fredConfig.api_key ?? '');
   for (const [name, handler] of Object.entries(marketHandlers)) {
     if (MARKET_DATA_TOOL_DEFS[name]) {
       allHandlers[name] = { handler, def: MARKET_DATA_TOOL_DEFS[name], platform: 'markets' };
+    }
+  }
+
+  // Crypto trading handlers
+  const cryptoTradeHandlers: Record<string, ToolHandler> = {
+    crypto_buy: async (args) => {
+      const result = await tradingService.buy(
+        'binance', agentId, String(args.symbol).toUpperCase(),
+        Number(args.amount), args.agent_context ? String(args.agent_context) : undefined
+      );
+      return JSON.stringify(result);
+    },
+    crypto_sell: async (args) => {
+      const result = await tradingService.sell(
+        'binance', agentId, String(args.symbol).toUpperCase(),
+        Number(args.shares), args.agent_context ? String(args.agent_context) : undefined
+      );
+      return JSON.stringify(result);
+    },
+  };
+  for (const [name, handler] of Object.entries(cryptoTradeHandlers)) {
+    if (MARKET_DATA_TOOL_DEFS[name]) {
+      allHandlers[name] = { handler, def: MARKET_DATA_TOOL_DEFS[name], platform: 'binance' };
+    }
+  }
+
+  // Scanner and cross-platform handlers
+  const scanner = new MarketScanner();
+  const scannerHandlers: Record<string, ToolHandler> = {
+    scan_spreads: async (args) => {
+      const type = String(args.type || 'all');
+      const signals: SpreadSignal[] = [];
+      if (type === 'all' || type === 'complements') {
+        signals.push(...await scanner.scanComplements());
+      }
+      if (type === 'all' || type === 'cross_platform') {
+        signals.push(...await scanner.scanCrossPlatform());
+      }
+      if (type === 'all' || type === 'crypto') {
+        signals.push(...await scanner.scanCryptoSpreads());
+      }
+      if (signals.length === 0) return JSON.stringify({ message: 'No spread signals found' });
+      return JSON.stringify(signals.slice(0, 10));
+    },
+    kalshi_markets: async (args) => {
+      const events = await scanner['kalshi'].getEvents({
+        limit: Number(args.limit) || 20,
+        category: args.category ? String(args.category) : undefined,
+      });
+      return JSON.stringify(events.map(e => ({
+        title: e.title,
+        category: e.category,
+        markets: e.markets.slice(0, 3).map(m => ({
+          ticker: m.ticker,
+          title: m.title,
+          yes_price: m.yes_ask_dollars,
+          volume_24h: m.volume_24h_fp,
+        })),
+      })));
+    },
+    forex_rates: async () => {
+      const rates = await scanner.getForexSnapshot();
+      return JSON.stringify(rates);
+    },
+  };
+  for (const [name, handler] of Object.entries(scannerHandlers)) {
+    if (MARKET_DATA_TOOL_DEFS[name]) {
+      allHandlers[name] = { handler, def: MARKET_DATA_TOOL_DEFS[name], platform: 'scanner' };
     }
   }
 
