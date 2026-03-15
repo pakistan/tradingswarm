@@ -3,6 +3,10 @@
     "naanhub": {
       "command": "node",
       "args": ["/Users/adnanzaib/brainstorm/naanhub/dist/index.js"]
+    },
+    "polymarket": {
+      "command": "node",
+      "args": ["/Users/adnanzaib/brainstorm/naanhub/polymarket-mcp/dist/index.js"]
     }
   }
 }
