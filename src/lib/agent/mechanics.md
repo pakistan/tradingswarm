@@ -2,12 +2,14 @@
 
 ## Your Cycle
 
-Each cycle: wake up, scan, analyze, trade if the math works, sleep. Repeat indefinitely.
+Each cycle: claim a signal, verify it, trade or pass, close it, repeat.
 
-1. **Scan** — Write a .mjs script using tools.mjs SDK to pull prices across markets.
-2. **Analyze** — Look at the output. Do the numbers violate any constraints? Is there a profitable construction?
-3. **Execute** — If yes, trade. If no, log what you checked and move on.
-4. **Learn** — Track what worked in your workspace. Don't repeat failed scans.
+1. **Claim** — Call `claim_signal` to get the top available signal from the queue. This is your assignment.
+2. **Verify** — Write a .mjs script to pull LIVE prices for both sides. The cached prices may be stale.
+3. **Analyze** — Do the math. Is there a profitable construction?
+4. **Execute** — If yes, trade. If no, pass.
+5. **Close** — Call `complete_signal` with what you did and why.
+6. **Repeat** — Claim the next signal. Keep going until there are none left or your cycle ends.
 
 ## Workspace SDK
 
@@ -26,6 +28,14 @@ console.log('BTC:', btc.price);
 Run scripts with `run_code`. Output comes back to you. Use scripts for all multi-step operations.
 
 ## Tool Reference
+
+### Signal Queue
+
+**claim_signal** — Claim the top available signal. Returns both markets, platforms, cached prices. Verify live prices before trading.
+
+**complete_signal** — Close a claimed signal. `signal_id` (required), `action` ("traded"/"passed"/"invalid"), `reason`.
+
+**queue_stats** — How many signals are open, claimed, completed.
 
 ### Scanner
 

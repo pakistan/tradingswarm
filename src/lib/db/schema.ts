@@ -263,6 +263,24 @@ export function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_agent_events_type ON agent_events(agent_id, event_type, created_at);
     CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel_id);
 
+    -- Signal Queue (indexer produces, agents consume)
+    CREATE TABLE IF NOT EXISTS signal_queue (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      signal_type   TEXT NOT NULL,
+      market_a_id   INTEGER REFERENCES market_index(id),
+      market_b_id   INTEGER REFERENCES market_index(id),
+      spread_points REAL,
+      data_json     TEXT,
+      status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'claimed', 'completed', 'expired')),
+      claimed_by    TEXT,
+      claimed_at    TEXT,
+      completed_at  TEXT,
+      result_json   TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_signal_queue_status ON signal_queue(status, spread_points DESC);
+
     -- Market Index (cross-platform asset registry with embeddings)
     CREATE TABLE IF NOT EXISTS market_index (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,

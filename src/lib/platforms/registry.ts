@@ -60,6 +60,7 @@ import { workspaceDomain } from '@/lib/agent/tools/workspace';
 import { memoryDomain } from '@/lib/agent/tools/memory';
 import { channelsDomain } from '@/lib/agent/tools/channels';
 import { scannerDomain } from '@/lib/trading/scanner-domain';
+import { queueDomain } from '@/lib/trading/queue-domain';
 
 const toolDomains: DomainModule[] = [
   webDomain,
@@ -67,4 +68,5 @@ const toolDomains: DomainModule[] = [
   memoryDomain,
   channelsDomain,
   scannerDomain,
+  queueDomain,
 ];

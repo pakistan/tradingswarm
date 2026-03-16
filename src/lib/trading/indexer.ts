@@ -270,7 +270,34 @@ export class MarketIndexer {
     linkTxn();
     console.log(`[indexer] Found ${linkCount} links`);
 
-    return { indexed: allItems.length, links: linkCount };
+    // 5. Push actionable signals to the queue
+    const { SignalQueue } = await import('./queue');
+    const queue = new SignalQueue(this.db);
+    queue.expireStale(30); // Clean up crashed claims
+
+    const actionableLinks = this.db.prepare(`
+      SELECT ml.id, ml.market_a_id, ml.market_b_id, ml.spread_points, ml.link_type,
+        a.title as title_a, a.price as price_a, a.platform as platform_a,
+        b.title as title_b, b.price as price_b, b.platform as platform_b
+      FROM market_links ml
+      JOIN market_index a ON a.id = ml.market_a_id
+      JOIN market_index b ON b.id = ml.market_b_id
+      WHERE a.price IS NOT NULL AND a.price > 0
+        AND (ml.spread_points > 5 OR ml.link_type = 'llm')
+    `).all() as any[];
+
+    let signalCount = 0;
+    for (const link of actionableLinks) {
+      queue.enqueue(link.link_type, link.market_a_id, link.market_b_id, link.spread_points, {
+        title_a: link.title_a, title_b: link.title_b,
+        platform_a: link.platform_a, platform_b: link.platform_b,
+        price_a: link.price_a, price_b: link.price_b,
+      });
+      signalCount++;
+    }
+    console.log(`[indexer] Queued ${signalCount} signals`);
+
+    return { indexed: allItems.length, links: linkCount, signals: signalCount };
   }
 
   // --- LLM-generated links for prediction markets ---

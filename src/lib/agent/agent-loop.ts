@@ -222,7 +222,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
         // e. Initialize conversation
         const conversation: Message[] = [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Today is ${new Date().toISOString().split('T')[0]}. New cycle. Write a .mjs script to scan for pricing discrepancies, then analyze the output.` },
+          { role: 'user', content: `Today is ${new Date().toISOString().split('T')[0]}. New cycle. Claim a signal, verify live prices, do the math, trade or pass, close it.` },
         ];
 
         // f. Conversation loop (tool call rounds)
