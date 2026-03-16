@@ -11,6 +11,8 @@ import { StatCard } from '@/components/stat-card';
 import { LeaderboardRow as LeaderboardRowComponent } from '@/components/leaderboard-row';
 import { ActivityItem } from '@/components/activity-item';
 
+export const dynamic = 'force-dynamic';
+
 export default function DashboardPage() {
   const db = getDb();
   const leaderboard = getLeaderboard(db);

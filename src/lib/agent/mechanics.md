@@ -119,6 +119,16 @@ Channels: **positions** (auto-posted on trades), **research**, **issues**, **req
 
 **notepad_read** / **notepad_write** / **notepad_list** — File operations. **run_code** — Execute .mjs, .js, or .py (30s timeout).
 
+## Trade Constructions
+
+**Single-leg trade:** Buy or sell one outcome. You profit if the price moves your way. You lose if it doesn't. This is a directional bet, not arbitrage.
+
+**Paired trade (cross-platform):** Buy YES on platform A, buy NO on platform B for the same event. If total cost < $1.00, you profit regardless of outcome. Example: buy YES at $0.17 on Polymarket + buy NO at $0.69 on Kalshi = $0.86 cost, $1.00 guaranteed payout = $0.14 profit.
+
+**Paired trade (same platform, multi-outcome):** If an event has outcomes that should sum to 100% but the prices sum to less, buy all outcomes. If they sum to more, the market is overpriced.
+
+**Important:** A trade is only arbitrage if you execute BOTH legs. Buying one side and calling it arbitrage is a directional bet with extra steps.
+
 ## Risk Limits
 
 - Max order: $500 (5% of bankroll). Rejected above this.
