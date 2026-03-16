@@ -237,7 +237,8 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
               `- Buy YES on the CHEAP platform (lower price)\n` +
               `- Buy NO on the EXPENSIVE platform (higher price) — for Kalshi use kalshi_buy with side="no", for Polymarket use pm_buy with the NO outcome's token_id (get it from pm_market_detail)\n` +
               `- Your total cost should be < $1.00 for a guaranteed $1.00 payout\n` +
-              `- Example: YES at $0.17 + NO at $0.69 = $0.86 cost → $0.14 guaranteed profit\n\n` +
+              `- Example: YES at $0.17 + NO at $0.69 = $0.86 cost → $0.14 guaranteed profit\n` +
+              `- VERIFY THE MATH: if YES price + (1 - NO price on other platform) >= $1.00, there is NO arbitrage. Do not trade.\n\n` +
               `When done, call complete_signal with signal_id ${signal.id}.`;
           } else {
             signalContext = '\n\nNo signals in the queue. Use scan_spreads or browse markets to find opportunities on your own.';
