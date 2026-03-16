@@ -32,7 +32,9 @@ export class MarketScanner {
       FROM market_links ml
       JOIN market_index a ON a.id = ml.market_a_id
       JOIN market_index b ON b.id = ml.market_b_id
-      WHERE ml.spread_points >= ? OR ml.link_type = 'llm'
+      WHERE (ml.spread_points >= ? OR ml.link_type = 'llm')
+        AND a.price IS NOT NULL AND a.price > 0
+        AND b.price IS NOT NULL AND b.price > 0
       ORDER BY ml.spread_points DESC
       LIMIT 20
     `).all(minSpread) as any[];

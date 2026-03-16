@@ -105,7 +105,8 @@ export class MarketIndexer {
           if (firstMarket?.outcomePrices) {
             try {
               const prices = JSON.parse(firstMarket.outcomePrices) as string[];
-              price = parseFloat(prices[0] ?? '0');
+              const parsed = parseFloat(prices[0] ?? '0');
+              price = parsed > 0 && parsed < 1 ? parsed : null; // Filter out 0 and 1 (closed/invalid)
             } catch { /* skip */ }
           }
           if (firstMarket?.clobTokenIds) {
