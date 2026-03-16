@@ -219,10 +219,28 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
           version.mechanics_file,
         );
 
-        // e. Initialize conversation
+        // e. Auto-claim a signal from the queue and inject it into the conversation
+        let signalContext = '';
+        try {
+          const { SignalQueue } = await import('@/lib/trading/queue');
+          const queue = new SignalQueue(db);
+          const signal = queue.claim(config.agentId);
+          if (signal) {
+            signalContext = `\n\nYour assigned signal (#${signal.id}):\n` +
+              `Market A: ${signal.market_a} (${signal.platform_a}, price: ${signal.price_a})\n` +
+              `Market B: ${signal.market_b} (${signal.platform_b}, price: ${signal.price_b})\n` +
+              `Spread: ${signal.spread_points} points | Type: ${signal.signal_type}\n` +
+              `Asset IDs: A=${signal.asset_id_a}, B=${signal.asset_id_b}\n\n` +
+              `Pull live prices for both sides and any related markets. Reason about whether these prices are logically consistent. If you find an inconsistency, construct a paired trade. When done, call complete_signal with signal_id ${signal.id}.`;
+          } else {
+            signalContext = '\n\nNo signals in the queue. Use scan_spreads or browse markets to find opportunities on your own.';
+          }
+        } catch { /* fall back to manual */ }
+
+        // f. Initialize conversation
         const conversation: Message[] = [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Today is ${new Date().toISOString().split('T')[0]}. New cycle. Claim a signal. Pull live prices from multiple related markets. Reason about whether the prices are logically consistent with each other.` },
+          { role: 'user', content: `Today is ${new Date().toISOString().split('T')[0]}. New cycle.${signalContext}` },
         ];
 
         // f. Conversation loop (tool call rounds)

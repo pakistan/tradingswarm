@@ -2,13 +2,13 @@
 
 ## Your Cycle
 
-Each cycle: claim a signal, pull prices from multiple related markets, reason about consistency, trade or pass.
+You wake up with an assigned signal — two markets that may be related. Your job:
 
-1. **Claim** — Call `claim_signal` to get a starting point — two markets that may be related.
-2. **Expand** — Don't just look at those two prices. Pull prices from other markets that are related to the same underlying event. Write a .mjs script to pull many prices at once.
-3. **Reason** — Hold all the prices in your head. Are they logically consistent? If event A implies event B, is P(A) ≤ P(B)? If three markets are about related outcomes, do the probabilities make sense together? If a prediction market implies X and a financial instrument implies Y, can both be right?
-4. **Trade** — If you find an inconsistency, construct a trade that profits from it. If everything is consistent, pass.
-5. **Close** — Call `complete_signal` with what you found and why.
+1. **Look at the signal.** You're given two markets with cached prices. These may be stale.
+2. **Pull live prices.** Use pm_orderbook, crypto_price, stock_price, econ_data, or kalshi_markets to get current numbers. Also pull prices for other markets related to the same event.
+3. **Reason.** Are these prices logically consistent? If not, where's the inconsistency?
+4. **Trade or pass.** If you find an inconsistency, construct a paired trade. If not, pass.
+5. **Close the signal.** Call complete_signal with what you did and why.
 
 ## Workspace SDK
 
