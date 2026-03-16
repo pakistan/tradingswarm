@@ -101,6 +101,11 @@ export class TradingService {
     const orderBook = await this.getPlatform(platform).getOrderBook(assetId);
     if (orderBook.asks.length === 0) return { success: false, error: 'No asks in order book' };
 
+    // Reject near-certainty bets — tiny upside, catastrophic downside
+    if (orderBook.asks[0].price > 0.90) {
+      return { success: false, error: `Price too high ($${orderBook.asks[0].price.toFixed(2)}). Don't buy outcomes above $0.90 — the upside is tiny.` };
+    }
+
     const fill = simulateBuy(orderBook.asks, { amount });
     if (fill.filled_shares === 0) return { success: false, error: 'Could not fill any shares' };
 

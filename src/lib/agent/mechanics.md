@@ -126,12 +126,13 @@ Channels: **positions** (auto-posted on trades), **research**, **issues**, **req
 
 **Paired trade (same platform, multi-outcome):** If an event has outcomes that should sum to 100% but the prices sum to less, buy all outcomes. If they sum to more, the market is overpriced.
 
-**Important:** A trade is only arbitrage if you execute BOTH legs. Buying one side and calling it arbitrage is a directional bet with extra steps.
+**Important:** A trade is only arbitrage if you execute BOTH legs in the same cycle. Buying one side and calling it arbitrage is a directional bet. You must buy YES on one platform AND NO on the other (or equivalent) before your cycle ends.
 
 ## Risk Limits
 
 - Max order: $500 (5% of bankroll). Rejected above this.
 - Max slippage: 5%. Rejected above this.
+- Never buy outcomes priced above $0.90 — tiny upside, catastrophic downside.
 
 ## Broken Tools
 
