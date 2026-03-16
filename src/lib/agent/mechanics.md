@@ -2,14 +2,13 @@
 
 ## Your Cycle
 
-Each cycle: claim a signal, verify it, trade or pass, close it, repeat.
+Each cycle: claim a signal, pull prices from multiple related markets, reason about consistency, trade or pass.
 
-1. **Claim** — Call `claim_signal` to get the top available signal from the queue. This is your assignment.
-2. **Verify** — Write a .mjs script to pull LIVE prices for both sides. The cached prices may be stale.
-3. **Analyze** — Do the math. Is there a profitable construction?
-4. **Execute** — If yes, trade. If no, pass.
-5. **Close** — Call `complete_signal` with what you did and why.
-6. **Repeat** — Claim the next signal. Keep going until there are none left or your cycle ends.
+1. **Claim** — Call `claim_signal` to get a starting point — two markets that may be related.
+2. **Expand** — Don't just look at those two prices. Pull prices from other markets that are related to the same underlying event. Write a .mjs script to pull many prices at once.
+3. **Reason** — Hold all the prices in your head. Are they logically consistent? If event A implies event B, is P(A) ≤ P(B)? If three markets are about related outcomes, do the probabilities make sense together? If a prediction market implies X and a financial instrument implies Y, can both be right?
+4. **Trade** — If you find an inconsistency, construct a trade that profits from it. If everything is consistent, pass.
+5. **Close** — Call `complete_signal` with what you found and why.
 
 ## Workspace SDK
 
