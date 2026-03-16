@@ -250,27 +250,29 @@ export class MarketIndexer {
 
     if (unlinked.length === 0) return 0;
 
-    const titles = unlinked.map(m => `[${m.id}] ${m.title}`).join('\n');
+    // Clean titles — strip noise like "before GTA VI?" that confuses the model
+    const cleanTitle = (t: string) => t.replace(/\s*before GTA VI\??/gi, '').replace(/\s*GTA VI\??/gi, '').trim();
+    const titles = unlinked.map(m => `[${m.id}] ${cleanTitle(m.title)}`).join('\n');
 
     const res = await this.openai.chat.completions.create({
       model: this.linkModel,
       max_tokens: 2000,
       messages: [{
         role: 'user',
-        content: `For each prediction market below, identify financial instruments whose PRICE WOULD MOVE DIRECTLY if this market resolved YES vs NO. Only include instruments where you could construct a trade: buy the prediction market AND the correlated instrument as a pair.
+        content: `You are a cross-market analyst. For each prediction market below, think about what financial instruments would be affected if this outcome happened. Think creatively — consider second-order effects:
 
-Rules:
-- Only include DIRECT, TRADEABLE correlations. "Mars colonization" does not correlate with CPI.
-- If a market is about crypto (bitcoin, ethereum), link it to the corresponding crypto pair.
-- If a market is about interest rates or the Fed, link it to DFF, DGS10, DGS2, TLT.
-- If a market is about a specific company, link it to that stock ticker.
-- If a market is about geopolitics/war, link it to relevant commodity ETFs (XLE for oil, GLD for gold).
-- If there is NO direct tradeable correlation, return an empty correlated array for that market.
-- Most markets will have 0-2 correlations. Very few will have more.
+- Geopolitical events affect defense stocks (ITA), oil (XLE), gold (GLD), currencies, emerging markets (EEM)
+- Political outcomes affect broad indices (SPY, QQQ), sector ETFs, bonds (TLT)
+- Crypto events affect crypto pairs directly, plus crypto-related stocks
+- Economic predictions connect to Fed rates, treasury yields, unemployment data
+- Even entertainment/cultural events can connect to parent company stocks
+- War/conflict affects energy, defense, safe havens (GLD, TLT)
 
-Reply in JSON only: [{id: number, correlated: [{platform: "binance"|"stocks"|"fred", asset_id: string}]}]
+For each market, list 1-5 correlated instruments. Include the reasoning. Only skip markets that truly have zero financial relevance.
 
-Available assets: crypto (BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT), stocks/ETFs (SPY, QQQ, TLT, GLD, XLE, XLF, ITA, EEM, HYG), FRED (DFF, DGS10, DGS2, T10Y2Y, UNRATE, CPIAUCSL).
+Reply in JSON: [{id: number, correlated: [{platform: "binance"|"stocks"|"fred", asset_id: string, reason: string}]}]
+
+Available: crypto (BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT, ADAUSDT, DOGEUSDT, AVAXUSDT, DOTUSDT, LINKUSDT), stocks/ETFs (SPY, QQQ, TLT, GLD, XLE, XLF, ITA, EEM, HYG), FRED (DFF, DGS10, DGS2, T10Y2Y, UNRATE, CPIAUCSL).
 
 Markets:\n${titles}`,
       }],
@@ -304,7 +306,8 @@ Markets:\n${titles}`,
       for (const corr of link.correlated) {
         const target = this.db.prepare('SELECT id FROM market_index WHERE platform = ? AND asset_id = ?').get(corr.platform, corr.asset_id) as { id: number } | undefined;
         if (target) {
-          insertLink.run(link.id, target.id, `LLM: ${corr.platform}/${corr.asset_id}`);
+          const reason = (corr as any).reason ?? `${corr.platform}/${corr.asset_id}`;
+          insertLink.run(link.id, target.id, reason);
           count++;
         }
       }

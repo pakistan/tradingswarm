@@ -723,7 +723,8 @@ function buildWorkspaceHandlers(agentId: string): Record<string, ToolHandler> {
 function buildMarketDataHandlers(alphaVantageKey: string, fredKey: string): Record<string, ToolHandler> {
   const BINANCE = 'https://data-api.binance.vision/api/v3';
   const AV = 'https://www.alphavantage.co/query';
-  const FRED = 'https://api.stlouisfed.org/fred/series/observations';
+  const fredApi = fredKey ? new (require('@/lib/platforms/fred/api').FredAPI)(fredKey) : null;
+  const forexApi = new (require('@/lib/platforms/forex/api').ForexAPI)();
 
   return {
     crypto_price: async (args) => {
@@ -781,13 +782,9 @@ function buildMarketDataHandlers(alphaVantageKey: string, fredKey: string): Reco
       });
     },
     econ_data: async (args) => {
-      if (!fredKey) return JSON.stringify({ error: 'FRED API key not configured' });
-      const seriesId = String(args.series_id).toUpperCase();
-      const limit = Math.min(Number(args.limit) || 10, 50);
-      const res = await fetch(`${FRED}?series_id=${seriesId}&api_key=${fredKey}&file_type=json&sort_order=desc&limit=${limit}`);
-      if (!res.ok) return JSON.stringify({ error: `FRED error ${res.status}` });
-      const d = await res.json() as { observations?: Array<{ date: string; value: string }> };
-      return JSON.stringify((d.observations ?? []).map(o => ({ date: o.date, value: o.value })));
+      if (!fredApi) return JSON.stringify({ error: 'FRED API key not configured' });
+      const obs = await fredApi.getObservations(String(args.series_id), Number(args.limit) || 10);
+      return JSON.stringify(obs);
     },
   };
 }
@@ -1053,10 +1050,9 @@ export function buildToolRegistry(
       })));
     },
     forex_rates: async () => {
-      const res = await fetch('https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR,GBP,JPY,CNY,RUB,MXN,BRL');
-      if (!res.ok) return JSON.stringify({ error: 'Forex API error' });
-      const d = await res.json() as { rates: Record<string, number> };
-      return JSON.stringify(d.rates);
+      const { ForexAPI } = await import('@/lib/platforms/forex/api');
+      const rates = await new ForexAPI().getLatest();
+      return JSON.stringify(rates);
     },
   };
   for (const [name, handler] of Object.entries(scannerHandlers)) {
