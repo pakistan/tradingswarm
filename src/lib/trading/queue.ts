@@ -44,8 +44,19 @@ export class SignalQueue {
   }
 
   // Agent: atomically claim the top open signal
+  // Prioritizes by: spread size * historical trade rate for this signal type
   claim(agentId: string): SignalDetail | null {
+    // Compute trade rates per signal type from history
+    const tradeRates = this.db.prepare(`
+      SELECT signal_type,
+        CAST(SUM(CASE WHEN result_json LIKE '%"action":"traded"%' THEN 1 ELSE 0 END) AS REAL) / COUNT(*) as rate
+      FROM signal_queue WHERE status = 'completed' GROUP BY signal_type
+    `).all() as Array<{ signal_type: string; rate: number }>;
+    const rateMap: Record<string, number> = {};
+    for (const r of tradeRates) rateMap[r.signal_type] = r.rate;
+
     // better-sqlite3 is synchronous — this is atomic
+    // Score = spread_points * (1 + historical_trade_rate). New types get full weight.
     const signal = this.db.prepare(`
       UPDATE signal_queue SET status = 'claimed', claimed_by = ?, claimed_at = datetime('now')
       WHERE id = (

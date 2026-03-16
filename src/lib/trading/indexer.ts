@@ -318,26 +318,24 @@ export class MarketIndexer {
     const cleanTitle = (t: string) => t.replace(/\s*before GTA VI\??/gi, '').replace(/\s*GTA VI\??/gi, '').trim();
     const titles = unlinked.map(m => `[${m.id}] ${cleanTitle(m.title)}`).join('\n');
 
+    // Get feedback from past signal results to improve link quality
+    const { FeedbackAnalyzer } = await import('./feedback');
+    const feedback = new FeedbackAnalyzer(this.db);
+    const feedbackContext = feedback.getLLMContext();
+
     const res = await this.openai.chat.completions.create({
       model: this.linkModel,
       max_tokens: 2000,
       messages: [{
         role: 'user',
-        content: `You are a cross-market analyst. For each prediction market below, think about what financial instruments would be affected if this outcome happened. Think creatively — consider second-order effects:
-
-- Geopolitical events affect defense stocks (ITA), oil (XLE), gold (GLD), currencies, emerging markets (EEM)
-- Political outcomes affect broad indices (SPY, QQQ), sector ETFs, bonds (TLT)
-- Crypto events affect crypto pairs directly, plus crypto-related stocks
-- Economic predictions connect to Fed rates, treasury yields, unemployment data
-- Even entertainment/cultural events can connect to parent company stocks
-- War/conflict affects energy, defense, safe havens (GLD, TLT)
+        content: `You are a cross-market analyst. For each prediction market below, identify financial instruments that would be affected if this outcome happened.
 
 For each market, list 1-5 correlated instruments. Include the reasoning. Only skip markets that truly have zero financial relevance.
 
 Reply in JSON: [{id: number, correlated: [{platform: "binance"|"stocks"|"fred", asset_id: string, reason: string}]}]
 
 Available: crypto (BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT, ADAUSDT, DOGEUSDT, AVAXUSDT, DOTUSDT, LINKUSDT), stocks/ETFs (SPY, QQQ, TLT, GLD, XLE, XLF, ITA, EEM, HYG), FRED (DFF, DGS10, DGS2, T10Y2Y, UNRATE, CPIAUCSL).
-
+${feedbackContext}
 Markets:\n${titles}`,
       }],
     });
