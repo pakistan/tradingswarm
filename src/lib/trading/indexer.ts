@@ -286,8 +286,12 @@ export class MarketIndexer {
         AND (ml.spread_points > 5 OR ml.link_type = 'llm')
     `).all() as any[];
 
+    // Only queue top 10 signals — agents work through them, then we re-run with fresh feedback
+    const queueStats = queue.stats();
+    const slotsAvailable = Math.max(0, 10 - queueStats.open);
+
     let signalCount = 0;
-    for (const link of actionableLinks) {
+    for (const link of actionableLinks.slice(0, slotsAvailable)) {
       queue.enqueue(link.link_type, link.market_a_id, link.market_b_id, link.spread_points, {
         title_a: link.title_a, title_b: link.title_b,
         platform_a: link.platform_a, platform_b: link.platform_b,
