@@ -122,7 +122,12 @@ export class TradingService {
 
     // Cache outcome if not already in DB (so dashboard can show names)
     if (!trades.getOutcomeById(this.db, assetId)) {
-      trades.upsertOutcome(this.db, { outcome_id: assetId, market_id: '', name: assetId, current_price: fill.avg_fill_price });
+      // Create a placeholder market if needed, then cache the outcome
+      const placeholderId = `${platform}_${assetId.slice(0, 20)}`;
+      if (!trades.getMarket(this.db, placeholderId)) {
+        trades.upsertMarket(this.db, { market_id: placeholderId, platform, question: assetId.slice(0, 50), category: null, description: null, resolution_source: null, end_date: null, active: 1, volume: 0, raw_json: null });
+      }
+      trades.upsertOutcome(this.db, { outcome_id: assetId, market_id: placeholderId, name: assetId.slice(0, 30), current_price: fill.avg_fill_price });
     }
 
     // Execute

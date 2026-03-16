@@ -182,7 +182,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
 
     // Calculate sleep interval
     const sleepMs = INTERVAL_MS[version.schedule_interval] ?? INTERVAL_MS['1h'];
-    const maxIterations = config.maxIterationsPerCycle ?? 12;
+    const maxIterations = config.maxIterationsPerCycle ?? 15;
 
     // 4. Stagger startup to avoid rate limit storms
     const startupDelay = Math.random() * 10000; // 0-10s random delay
@@ -222,7 +222,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
         // e. Initialize conversation
         const conversation: Message[] = [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Today is ${new Date().toISOString().split('T')[0]}. You are waking up for a new cycle. Recall your hypotheses and memory. What deserves your attention?` },
+          { role: 'user', content: `Today is ${new Date().toISOString().split('T')[0]}. New cycle. Write a .mjs script to scan for pricing discrepancies, then analyze the output.` },
         ];
 
         // f. Conversation loop (tool call rounds)
