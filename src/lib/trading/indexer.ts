@@ -83,15 +83,51 @@ export class MarketIndexer {
 
   // --- Pull markets from all platforms ---
 
-  async pullPolymarket(): Promise<{ id: string; title: string; price: number | null }[]> {
+  async pullPolymarket(): Promise<{ id: string; title: string; price: number | null; metadata?: Record<string, unknown> }[]> {
     const api = new PolymarketAPI();
-    const markets = await api.listMarkets({ limit: 100, closed: false });
-    const items: { id: string; title: string; price: number | null }[] = [];
-    for (const m of markets) {
-      if (!m.question || !m.outcomePrices) continue;
-      const prices = JSON.parse(m.outcomePrices) as string[];
-      items.push({ id: m.id, title: m.question, price: parseFloat(prices[0] ?? '0') });
+    const items: { id: string; title: string; price: number | null; metadata?: Record<string, unknown> }[] = [];
+    const seen = new Set<string>();
+
+    // Pull 500 events across 5 pages using the events endpoint
+    for (let offset = 0; offset < 500; offset += 100) {
+      const events = await api.listEvents({ limit: 100, offset, active: true, closed: false });
+      if (events.length === 0) break;
+
+      for (const event of events) {
+        // Index the event itself (the top-level question)
+        if (event.title && !seen.has(event.id)) {
+          seen.add(event.id);
+
+          // Get the best price from the first market
+          const firstMarket = event.markets?.[0];
+          let price: number | null = null;
+          let clobTokenIds: string | null = null;
+          if (firstMarket?.outcomePrices) {
+            try {
+              const prices = JSON.parse(firstMarket.outcomePrices) as string[];
+              price = parseFloat(prices[0] ?? '0');
+            } catch { /* skip */ }
+          }
+          if (firstMarket?.clobTokenIds) {
+            clobTokenIds = firstMarket.clobTokenIds;
+          }
+
+          items.push({
+            id: event.id,
+            title: event.title,
+            price,
+            metadata: {
+              slug: event.slug,
+              description: event.description?.slice(0, 200),
+              num_markets: event.markets?.length ?? 0,
+              clobTokenIds,
+            },
+          });
+        }
+      }
     }
+
+    console.log(`[indexer] Pulled ${items.length} Polymarket events`);
     return items;
   }
 
@@ -156,7 +192,7 @@ export class MarketIndexer {
     const stocks = avKey ? await this.pullStocks(JSON.parse(avKey.config_json).api_key ?? '') : [];
     const fred = this.pullFred();
 
-    const allItems: { platform: string; id: string; title: string; price: number | null }[] = [
+    const allItems: { platform: string; id: string; title: string; price: number | null; metadata?: Record<string, unknown> }[] = [
       ...pm.map(m => ({ platform: 'polymarket', ...m })),
       ...kalshi.map(m => ({ platform: 'kalshi', ...m })),
       ...crypto.map(m => ({ platform: 'binance', ...m })),
@@ -179,7 +215,7 @@ export class MarketIndexer {
     const txn = this.db.transaction(() => {
       for (let i = 0; i < allItems.length; i++) {
         const item = allItems[i];
-        this.upsert(item.platform, item.id, item.title, null, item.price, embeddings[i] ?? null);
+        this.upsert(item.platform, item.id, item.title, null, item.price, embeddings[i] ?? null, item.metadata);
       }
     });
     txn();

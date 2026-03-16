@@ -29,6 +29,21 @@ export class PolymarketAPI {
     throw new Error(`API failed after ${MAX_RETRIES} retries: ${url}`);
   }
 
+  async listEvents(params: {
+    limit?: number; offset?: number; active?: boolean; closed?: boolean;
+  } = {}): Promise<Array<{
+    id: string; title: string; slug: string; description: string | null;
+    markets: GammaMarket[];
+  }>> {
+    const url = new URL(`${GAMMA_BASE}/events`);
+    if (params.limit !== undefined) url.searchParams.set('limit', String(params.limit));
+    if (params.offset !== undefined) url.searchParams.set('offset', String(params.offset));
+    if (params.active !== undefined) url.searchParams.set('active', String(params.active));
+    if (params.closed !== undefined) url.searchParams.set('closed', String(params.closed));
+    const res = await this.rateLimitedFetch(url.toString());
+    return await res.json() as any[];
+  }
+
   async listMarkets(params: {
     query?: string; category?: string; min_volume?: number;
     max_end_date?: string; limit?: number; offset?: number;

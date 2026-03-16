@@ -9,12 +9,12 @@ import * as snapshots from '@/lib/db/snapshots';
 const definitions: Record<string, ToolDef> = {
   pm_markets: {
     name: 'pm_markets',
-    description: 'List prediction markets sorted by volume. Use offset to paginate and explore beyond the top markets.',
+    description: 'Browse prediction market events. Each event has one or more tradeable markets with clobTokenIds. Use offset to paginate.',
     parameters: {
       type: 'object',
       properties: {
-        limit: { type: 'number', description: 'Max results (default 20)' },
-        offset: { type: 'number', description: 'Skip this many results (default 0). Use to paginate: offset=0 for top markets, offset=20 for next page, etc.' },
+        limit: { type: 'number', description: 'Max events (default 15)' },
+        offset: { type: 'number', description: 'Skip this many events for pagination (default 0)' },
       },
     },
   },
@@ -174,24 +174,36 @@ function handlers(ctx: ToolContext): Record<string, ToolHandler> {
 
   return {
     pm_markets: async (args) => {
-      const limit = Math.min(Number(args.limit) || 10, 15);
+      const limit = Math.min(Number(args.limit) || 15, 20);
       const offset = Number(args.offset) || 0;
-      const markets = await api.listMarkets({ limit, offset, closed: false });
-      // Cache to DB
-      for (const m of markets) {
-        try {
-          trades.upsertMarket(db, { market_id: m.id, platform: 'polymarket', question: m.question, category: m.category, description: m.description, resolution_source: m.resolutionSource, end_date: m.endDate, active: m.active ? 1 : 0, volume: m.volumeNum ?? 0, raw_json: null });
-          if (m.outcomes && m.clobTokenIds && m.outcomePrices) {
-            const names = JSON.parse(m.outcomes) as string[];
-            const tokenIds = JSON.parse(m.clobTokenIds) as string[];
-            const prices = JSON.parse(m.outcomePrices) as string[];
-            for (let i = 0; i < names.length; i++) {
-              if (tokenIds[i]) trades.upsertOutcome(db, { outcome_id: tokenIds[i], market_id: m.id, name: names[i], current_price: parseFloat(prices[i] ?? '0') });
+      const events = await api.listEvents({ limit, offset, active: true, closed: false });
+      // Cache markets from events to DB
+      for (const event of events) {
+        for (const m of (event.markets ?? [])) {
+          try {
+            trades.upsertMarket(db, { market_id: m.id, platform: 'polymarket', question: m.question ?? event.title, category: m.category, description: m.description, resolution_source: m.resolutionSource, end_date: m.endDate, active: m.active ? 1 : 0, volume: m.volumeNum ?? 0, raw_json: null });
+            if (m.outcomes && m.clobTokenIds && m.outcomePrices) {
+              const names = JSON.parse(m.outcomes) as string[];
+              const tokenIds = JSON.parse(m.clobTokenIds) as string[];
+              const prices = JSON.parse(m.outcomePrices) as string[];
+              for (let i = 0; i < names.length; i++) {
+                if (tokenIds[i]) trades.upsertOutcome(db, { outcome_id: tokenIds[i], market_id: m.id, name: names[i], current_price: parseFloat(prices[i] ?? '0') });
+              }
             }
-          }
-        } catch { /* skip */ }
+          } catch { /* skip */ }
+        }
       }
-      return JSON.stringify(markets.map(m => ({ id: m.id, question: m.question, outcomes: m.outcomes, outcomePrices: m.outcomePrices, clobTokenIds: m.clobTokenIds, volume: m.volumeNum, endDate: m.endDate })));
+      // Return events with their markets
+      return JSON.stringify(events.map(e => ({
+        id: e.id,
+        title: e.title,
+        slug: e.slug,
+        markets: (e.markets ?? []).map(m => ({
+          id: m.id, question: m.question, outcomes: m.outcomes,
+          outcomePrices: m.outcomePrices, clobTokenIds: m.clobTokenIds,
+          volume: m.volumeNum, endDate: m.endDate,
+        })),
+      })));
     },
     pm_market_detail: async (args) => {
       const detail = await api.getMarketDetail(String(args.market_id));
