@@ -48,7 +48,7 @@ function matchesFilter(event: FeedEvent, filter: FilterPreset, selectedAgent: st
     case 'orders': return (event.type === 'tool_call' || event.type === 'tool_result') && (event.content.includes('buy') || event.content.includes('sell') || event.content.includes('Filled') || event.content.includes('cancel'));
     case 'thinking': return event.type === 'thinking';
     case 'tool_calls': return event.type === 'tool_call' || event.type === 'tool_result';
-    case 'errors': return event.type === 'error';
+    case 'errors': return event.type === 'error' || (event.type === 'tool_result' && (event.content.includes('Error') || event.content.includes('error')));
     case 'research': return event.type === 'tool_call' && (event.content.includes('web') || event.content.includes('search') || event.content.includes('orderbook') || event.content.includes('price history'));
     default: return true;
   }

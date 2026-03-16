@@ -207,14 +207,24 @@ function handlers(ctx: ToolContext): Record<string, ToolHandler> {
     },
     pm_market_detail: async (args) => {
       const detail = await api.getMarketDetail(String(args.market_id));
+      // Parse outcomes and token IDs for clear labeling
+      let outcomeDetails: Array<{ name: string; price: string; token_id: string }> = [];
+      try {
+        const names = JSON.parse(detail.outcomes ?? '[]') as string[];
+        const prices = JSON.parse(detail.outcomePrices ?? '[]') as string[];
+        const tokens = JSON.parse(detail.clobTokenIds ?? '[]') as string[];
+        outcomeDetails = names.map((name, i) => ({
+          name,
+          price: prices[i] ?? '0',
+          token_id: tokens[i] ?? '', // THIS is what you pass to pm_buy, pm_sell, pm_orderbook
+        }));
+      } catch { /* skip */ }
       return JSON.stringify({
         id: detail.id,
         question: detail.question,
         description: detail.description,
         category: detail.category,
-        outcomes: detail.outcomes,
-        outcomePrices: detail.outcomePrices,
-        clobTokenIds: detail.clobTokenIds,
+        outcomes: outcomeDetails, // Each outcome has name, price, and token_id for trading
         volume: detail.volumeNum,
         endDate: detail.endDate,
         spread: detail.spread,
