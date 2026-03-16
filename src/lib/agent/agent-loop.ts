@@ -199,6 +199,12 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
         // b. Build tool registry with current cycle_id
         const registry = buildToolRegistry(db, config.agentId, config.configVersionId, () => cycleId);
 
+        // b2. Generate SDK file so agent scripts can call tools directly
+        try {
+          const { generateAgentSDK } = await import('./sdk-generator');
+          generateAgentSDK(config.agentId, registry.listNames());
+        } catch { /* non-critical */ }
+
         // c. Load rules and memory
         const rules = getVersionRules(db, config.configVersionId)
           .filter(r => r.enabled === 1);
@@ -216,16 +222,22 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
         // e. Initialize conversation
         const conversation: Message[] = [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Today is ${new Date().toISOString().split('T')[0]}. You are waking up for a new cycle. Recall your hypotheses and memory. What deserves your attention? When you research, compare what you find to actual market prices — if you believe the true probability differs from the market price, that's a potential trade.` },
+          { role: 'user', content: `Today is ${new Date().toISOString().split('T')[0]}. You are waking up for a new cycle. Recall your hypotheses and memory. What deserves your attention?` },
         ];
 
         // f. Conversation loop (tool call rounds)
         for (let iteration = 0; iteration < maxIterations; iteration++) {
-          // Hard cap: if conversation is too long, keep system + user + last 8 messages
+          // Hard cap: if conversation is too long, keep system + user + recent messages
+          // Must start the slice at an assistant message to avoid orphaned tool responses
           if (conversation.length > 20) {
             const system = conversation[0];
             const user = conversation[1];
-            const recent = conversation.slice(-8);
+            let sliceStart = conversation.length - 8;
+            // Walk forward to find an assistant message (not a tool response)
+            while (sliceStart < conversation.length && conversation[sliceStart].role === 'tool') {
+              sliceStart++;
+            }
+            const recent = conversation.slice(sliceStart);
             conversation.length = 0;
             conversation.push(system, user, ...recent);
           }

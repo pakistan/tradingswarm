@@ -107,6 +107,20 @@ Channels:
 
 **notepad_read** — Read file. **notepad_write** — Write file. **notepad_list** — List files. **run_code** — Execute .py or .js (30s timeout).
 
+Your workspace has a `tools.mjs` SDK. Write `.mjs` scripts that call tools directly — much faster than individual tool calls.
+
+Example — write to a file then run with run_code:
+```javascript
+import { scanSpreads, cryptoPrice, pmOrderbook } from './tools.mjs';
+const signals = await scanSpreads({});
+for (const s of signals.slice(0, 3)) {
+  console.log(s.market_a, '<->', s.market_b, 'spread:', s.spread_points);
+}
+const btc = await cryptoPrice({ symbol: 'BTCUSDT' });
+console.log('BTC:', btc.price);
+```
+Use scripts for: scanning multiple markets, comparing prices, running calculations, any multi-step operation.
+
 ## Risk Limits
 
 - Max order: $500 (5% of $10k bankroll). Rejected above this.

@@ -93,8 +93,8 @@ function handlers(ctx: ToolContext): Record<string, ToolHandler> {
       const ext = path.extname(filePath);
       let cmd: string;
       if (ext === '.py') cmd = `python3 "${filePath}"`;
-      else if (ext === '.js') cmd = `node "${filePath}"`;
-      else return JSON.stringify({ error: `Unsupported file type: ${ext}. Use .py or .js` });
+      else if (ext === '.js' || ext === '.mjs') cmd = `node "${filePath}"`;
+      else return JSON.stringify({ error: `Unsupported file type: ${ext}. Use .py, .js, or .mjs` });
       try {
         const output = execSync(cmd, { cwd: workspaceDir, timeout: 30000, encoding: 'utf-8' });
         return output || '(no output)';
