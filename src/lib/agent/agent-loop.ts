@@ -228,10 +228,11 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
           if (signal) {
             signalContext = `\n\nYour assigned signal (#${signal.id}):\n` +
               `Market A: ${signal.market_a} (${signal.platform_a}, price: ${signal.price_a})\n` +
+              `  → To trade on ${signal.platform_a}: use ${signal.platform_a === 'polymarket' ? 'pm_buy/pm_sell with outcome_id' : 'kalshi_buy/kalshi_sell with ticker'} = "${signal.asset_id_a}"\n` +
               `Market B: ${signal.market_b} (${signal.platform_b}, price: ${signal.price_b})\n` +
-              `Spread: ${signal.spread_points} points | Type: ${signal.signal_type}\n` +
-              `Asset IDs: A=${signal.asset_id_a}, B=${signal.asset_id_b}\n\n` +
-              `Pull live prices for both sides and any related markets. Reason about whether these prices are logically consistent. If you find an inconsistency, construct a paired trade. When done, call complete_signal with signal_id ${signal.id}.`;
+              `  → To trade on ${signal.platform_b}: use ${signal.platform_b === 'polymarket' ? 'pm_buy/pm_sell with outcome_id' : 'kalshi_buy/kalshi_sell with ticker'} = "${signal.asset_id_b}"\n` +
+              `Spread: ${signal.spread_points} points\n\n` +
+              `IMPORTANT: These are CACHED prices — pull live prices first. To construct a paired trade, you need to buy on one platform and buy the OPPOSITE outcome on the other. A paired trade means your total cost < $1.00 for a guaranteed $1.00 payout. When done, call complete_signal with signal_id ${signal.id}.`;
           } else {
             signalContext = '\n\nNo signals in the queue. Use scan_spreads or browse markets to find opportunities on your own.';
           }

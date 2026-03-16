@@ -4,7 +4,7 @@ import { PolymarketAPI } from '@/lib/platforms/polymarket/api';
 import { KalshiAPI } from '@/lib/platforms/kalshi/api';
 
 const BINANCE = 'https://data-api.binance.vision/api/v3';
-const SIMILARITY_THRESHOLD = 0.82;
+const SIMILARITY_THRESHOLD = 0.75;
 const TOP_CRYPTO = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT'];
 const TOP_ETFS = ['SPY', 'QQQ', 'TLT', 'GLD', 'XLE', 'XLF', 'ITA', 'EEM', 'HYG', 'VIX'];
 const FRED_SERIES = [
@@ -275,6 +275,7 @@ export class MarketIndexer {
     const queue = new SignalQueue(this.db);
     queue.expireStale(30); // Clean up crashed claims
 
+    // Only queue cross-platform prediction market pairs where both sides are probabilities (0-1)
     const actionableLinks = this.db.prepare(`
       SELECT ml.id, ml.market_a_id, ml.market_b_id, ml.spread_points, ml.link_type,
         a.title as title_a, a.price as price_a, a.platform as platform_a,
@@ -282,8 +283,11 @@ export class MarketIndexer {
       FROM market_links ml
       JOIN market_index a ON a.id = ml.market_a_id
       JOIN market_index b ON b.id = ml.market_b_id
-      WHERE a.price IS NOT NULL AND a.price > 0
-        AND (ml.spread_points > 5 OR ml.link_type = 'llm')
+      WHERE a.price IS NOT NULL AND a.price > 0 AND a.price < 0.90
+        AND b.price IS NOT NULL AND b.price > 0 AND b.price < 0.90
+        AND a.platform IN ('polymarket', 'kalshi')
+        AND b.platform IN ('polymarket', 'kalshi')
+        AND ml.spread_points > 3
     `).all() as any[];
 
     // Only queue top 10 signals — agents work through them, then we re-run with fresh feedback
