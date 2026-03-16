@@ -232,7 +232,13 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<void> {
               `Market B: ${signal.market_b} (${signal.platform_b}, price: ${signal.price_b})\n` +
               `  → To trade on ${signal.platform_b}: use ${signal.platform_b === 'polymarket' ? 'pm_buy/pm_sell with outcome_id' : 'kalshi_buy/kalshi_sell with ticker'} = "${signal.asset_id_b}"\n` +
               `Spread: ${signal.spread_points} points\n\n` +
-              `IMPORTANT: These are CACHED prices — pull live prices first. To construct a paired trade, you need to buy on one platform and buy the OPPOSITE outcome on the other. A paired trade means your total cost < $1.00 for a guaranteed $1.00 payout. When done, call complete_signal with signal_id ${signal.id}.`;
+              `IMPORTANT: These are CACHED prices — pull live prices first.\n\n` +
+              `To construct a paired trade:\n` +
+              `- Buy YES on the CHEAP platform (lower price)\n` +
+              `- Buy NO on the EXPENSIVE platform (higher price) — for Kalshi use kalshi_buy with side="no", for Polymarket use pm_buy with the NO outcome's token_id (get it from pm_market_detail)\n` +
+              `- Your total cost should be < $1.00 for a guaranteed $1.00 payout\n` +
+              `- Example: YES at $0.17 + NO at $0.69 = $0.86 cost → $0.14 guaranteed profit\n\n` +
+              `When done, call complete_signal with signal_id ${signal.id}.`;
           } else {
             signalContext = '\n\nNo signals in the queue. Use scan_spreads or browse markets to find opportunities on your own.';
           }

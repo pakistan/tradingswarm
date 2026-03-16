@@ -18,11 +18,12 @@ const definitions: Record<string, ToolDef> = {
   },
   kalshi_buy: {
     name: 'kalshi_buy',
-    description: 'Paper trade: buy shares on a Kalshi market.',
+    description: 'Paper trade: buy YES or NO shares on a Kalshi market.',
     parameters: {
       type: 'object',
       properties: {
         ticker: { type: 'string', description: 'Kalshi market ticker' },
+        side: { type: 'string', description: '"yes" or "no" (default "yes")' },
         amount: { type: 'number', description: 'Dollar amount to spend (max $500)' },
         agent_context: { type: 'string', description: 'Your reasoning' },
       },
@@ -68,8 +69,10 @@ function handlers(ctx: ToolContext): Record<string, ToolHandler> {
       })));
     },
     kalshi_buy: async (args) => {
+      const side = String(args.side || 'yes').toLowerCase();
+      const ticker = side === 'no' ? `${String(args.ticker)}:no` : String(args.ticker);
       const result = await tradingService.buy(
-        'kalshi', agentId, String(args.ticker),
+        'kalshi', agentId, ticker,
         Number(args.amount), args.agent_context ? String(args.agent_context) : undefined
       );
       return JSON.stringify(result);
